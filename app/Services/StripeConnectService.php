@@ -81,21 +81,76 @@ class StripeConnectService
         return $shop->fresh();
     }
 
-    public function transfer(int $amountCents, Shop $shop, string $idempotencyKey, string $orderId): string
+    /**
+     * Transfert de la part vendeur. $sourceCharge (id du paiement « ch_... ») rattache
+     * le transfert au paiement : Stripe l'exécute même si les fonds sont encore en
+     * attente sur le solde de la plateforme.
+     */
+    public function transfer(int $amountCents, Shop $shop, string $idempotencyKey, string $orderId, ?string $sourceCharge = null): string
     {
         if (! $shop->stripe_account_id || ! $shop->is_active) {
             throw new RuntimeException("Le vendeur {$shop->nom} n'est pas encore activé sur Stripe Connect.");
         }
 
-        $transfer = $this->client()->transfers->create([
+        $params = [
             'amount' => $amountCents,
             'currency' => config('services.stripe.currency', 'mad'),
             'destination' => $shop->stripe_account_id,
             'metadata' => ['order_id' => $orderId, 'shop_id' => $shop->id],
-        ], [
+        ];
+
+        if ($sourceCharge) {
+            $params['source_transaction'] = $sourceCharge;
+        }
+
+        $transfer = $this->client()->transfers->create($params, [
             'idempotency_key' => $idempotencyKey,
         ]);
 
         return $transfer->id;
+    }
+
+    /** Reprend au vendeur un transfert déjà effectué (remboursement de l'acheteur). */
+    public function reverseTransfer(string $transferId, string $idempotencyKey): string
+    {
+        $reversal = $this->client()->transfers->createReversal($transferId, [], [
+            'idempotency_key' => $idempotencyKey,
+        ]);
+
+        return $reversal->id;
+    }
+
+    /** Rembourse intégralement un paiement et renvoie l'id du remboursement. */
+    public function refund(string $paymentIntentId, int $amountCents, string $orderId): string
+    {
+        $refund = $this->client()->refunds->create([
+            'payment_intent' => $paymentIntentId,
+            'amount' => $amountCents,
+            'metadata' => ['order_id' => $orderId],
+        ], [
+            'idempotency_key' => 'marketlocal-refund-order-'.$orderId,
+        ]);
+
+        return $refund->id;
+    }
+
+    /**
+     * Annule un PaymentIntent pour qu'il ne puisse plus être payé.
+     * Renvoie false si le paiement a déjà abouti ou est en cours de traitement :
+     * la commande ne doit alors pas être annulée (le webhook va la marquer payée).
+     */
+    public function cancelPaymentIntent(string $paymentIntentId): bool
+    {
+        $intent = $this->client()->paymentIntents->retrieve($paymentIntentId, []);
+
+        if (in_array($intent->status, ['succeeded', 'processing'], true)) {
+            return false;
+        }
+
+        if ($intent->status !== 'canceled') {
+            $this->client()->paymentIntents->cancel($paymentIntentId, []);
+        }
+
+        return true;
     }
 }

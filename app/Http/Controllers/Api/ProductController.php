@@ -37,7 +37,7 @@ class ProductController extends Controller
 
     public function show(Request $request, Product $product)
     {
-        $product->load(['shop:id,nom,logo,statut,user_id', 'category:id,nom', 'reviews']);
+        $product->load(['shop:id,nom,logo,statut,user_id', 'category:id,nom', 'reviews' => fn ($q) => $q->with('user:id,name')->latest()]);
         $user = $request->user();
         $isOwner = $user && $user->role === 'vendeur' && (int) $product->shop?->user_id === (int) $user->id;
         $isAdmin = $user && $user->role === 'admin';

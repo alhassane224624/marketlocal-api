@@ -9,8 +9,11 @@ use App\Http\Resources\OrderResource;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Services\SellerPayoutService;
+use App\Services\StripeConnectService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class OrderController extends Controller
 {
@@ -163,9 +166,9 @@ class OrderController extends Controller
         $shopId = $shop->id;
         $tauxActuel = (float) $shop->commission; // en pourcentage, ex: 10.00
 
-        // Lignes de cette boutique (shop_id figé à la vente), hors commandes annulées.
+        // Lignes de cette boutique (shop_id figé à la vente), commandes payées uniquement.
         $baseItems = fn () => OrderItem::where('shop_id', $shopId)
-            ->whereHas('order', fn ($q) => $q->where('statut', '!=', 'annulee'));
+            ->whereHas('order', fn ($q) => $q->whereIn('statut', SellerPayoutService::PAID_STATUSES));
 
         $depuis30j = fn ($q) => $q->where('created_at', '>=', now()->subDays(30));
 
@@ -198,14 +201,22 @@ class OrderController extends Controller
 
     // PUT /api/orders/{order}/statut (vendeur ou admin)
     // Autorisation + statuts permis par rôle : UpdateOrderStatusRequest.
-    // Ici : les transitions autorisées.
-    public function updateStatus(UpdateOrderStatusRequest $request, Order $order)
+    // Admin : transitions sur la commande entière.
+    // Vendeur : transitions sur les articles de SA boutique ; le statut global est
+    // ensuite recalculé (une commande multi-vendeurs avance au rythme du plus lent).
+    public function updateStatus(UpdateOrderStatusRequest $request, Order $order, StripeConnectService $stripe)
     {
         $nouveau = $request->validated('statut');
+        $isAdmin = $request->user()->role === 'admin';
+        $shopId = $request->user()->shop?->id;
 
-        $order = DB::transaction(function () use ($order, $nouveau) {
+        $order = DB::transaction(function () use ($order, $nouveau, $isAdmin, $shopId, $stripe) {
             // Verrou : évite qu'un webhook Stripe et un changement de statut se marchent dessus.
             $locked = Order::whereKey($order->id)->lockForUpdate()->firstOrFail();
+
+            if (! $isAdmin) {
+                return $this->advanceShopItems($locked, $shopId, $nouveau);
+            }
 
             $autorises = self::TRANSITIONS[$locked->statut] ?? [];
 
@@ -213,47 +224,59 @@ class OrderController extends Controller
                 abort(409, "Changement de statut impossible : {$locked->statut} -> {$nouveau}");
             }
 
-            // Annulation d'une commande non payée : on remet le stock en vente.
+            // Annulation d'une commande non payée : on bloque d'abord le paiement Stripe,
+            // puis on remet le stock en vente.
             if ($nouveau === 'annulee') {
+                if ($locked->stripe_payment_intent_id) {
+                    try {
+                        $cancelled = $stripe->cancelPaymentIntent($locked->stripe_payment_intent_id);
+                    } catch (Throwable $e) {
+                        report($e);
+                        abort(502, "Impossible d'annuler le paiement Stripe, réessayez.");
+                    }
+                    if (! $cancelled) {
+                        abort(409, 'Le paiement de cette commande est déjà en cours ou abouti.');
+                    }
+                }
+
                 foreach ($locked->items()->whereNotNull('product_id')->get() as $item) {
                     Product::whereKey($item->product_id)->increment('stock', $item->quantite);
                 }
             }
 
-            if ($nouveau === 'annulee') {
-                $locked->items()->update(['statut' => 'annulee']);
-            } elseif ($request->user()->role === 'admin') {
-                $locked->items()->update(['statut' => $nouveau]);
-            } else {
-                $shopId = $request->user()->shop?->id;
-                $sellerItems = $locked->items()->where('shop_id', $shopId)->lockForUpdate()->get();
-                if ($sellerItems->isEmpty()) {
-                    abort(403, 'Cette commande ne contient aucun article de votre boutique.');
-                }
-                $expectedCurrent = $nouveau === 'expediee' ? 'payee' : 'expediee';
-                if ($sellerItems->contains(fn ($item) => $item->statut !== $expectedCurrent)) {
-                    abort(409, "Les articles de votre boutique ne peuvent pas passer directement à {$nouveau}.");
-                }
-                $locked->items()->where('shop_id', $shopId)->update(['statut' => $nouveau]);
-
-                $allItems = $locked->items()->pluck('statut');
-                if ($allItems->every(fn ($status) => $status === 'livree')) {
-                    $nouveau = 'livree';
-                } elseif ($allItems->every(fn ($status) => in_array($status, ['expediee', 'livree'], true))) {
-                    $nouveau = 'expediee';
-                } else {
-                    // Une commande multi-vendeurs peut être partiellement expédiée.
-                    $locked->update(['statut' => 'payee']);
-                    return $locked;
-                }
-            }
-
+            $locked->items()->update(['statut' => $nouveau]);
             $locked->update(['statut' => $nouveau]);
 
             return $locked;
         });
 
         return response()->json(OrderResource::make($order)->resolve());
+    }
+
+    private function advanceShopItems(Order $locked, ?int $shopId, string $nouveau): Order
+    {
+        $sellerItems = $locked->items()->where('shop_id', $shopId)->lockForUpdate()->get();
+        if ($sellerItems->isEmpty()) {
+            abort(403, 'Cette commande ne contient aucun article de votre boutique.');
+        }
+
+        $expectedCurrent = $nouveau === 'expediee' ? 'payee' : 'expediee';
+        if ($sellerItems->contains(fn ($item) => $item->statut !== $expectedCurrent)) {
+            abort(409, "Les articles de votre boutique ne peuvent pas passer directement à {$nouveau}.");
+        }
+
+        $locked->items()->where('shop_id', $shopId)->update(['statut' => $nouveau]);
+
+        $allItems = $locked->items()->pluck('statut');
+        $global = match (true) {
+            $allItems->every(fn ($status) => $status === 'livree') => 'livree',
+            $allItems->every(fn ($status) => in_array($status, ['expediee', 'livree'], true)) => 'expediee',
+            default => 'payee', // partiellement expédiée
+        };
+
+        $locked->update(['statut' => $global]);
+
+        return $locked;
     }
 
     // GET /api/admin/orders

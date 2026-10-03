@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use App\Models\Product;
 use App\Models\Shop;
+use App\Services\SellerPayoutService;
 use App\Services\StripeConnectService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -64,7 +66,7 @@ class PaymentController extends Controller
         return response()->json(['client_secret' => $paymentIntent->client_secret]);
     }
 
-    public function refund(Request $request, Order $order)
+    public function refund(Request $request, Order $order, StripeConnectService $stripe)
     {
         if ($order->statut !== 'payee' || ! $order->stripe_payment_intent_id || $order->refunded_at) {
             return response()->json(['message' => 'Cette commande ne peut pas être remboursée dans son état actuel.'], 409);
@@ -75,33 +77,47 @@ class PaymentController extends Controller
         }
 
         try {
-            $refund = \Stripe\Refund::create([
-                'payment_intent' => $order->stripe_payment_intent_id,
-                'amount' => (int) round((float) $order->total * 100),
-                'metadata' => ['order_id' => (string) $order->id],
-            ], ['idempotency_key' => 'marketlocal-refund-order-'.$order->id]);
-
-            DB::transaction(function () use ($order, $refund) {
-                $locked = Order::whereKey($order->id)->lockForUpdate()->firstOrFail();
-                foreach ($locked->items()->whereNotNull('product_id')->get() as $item) {
-                    \App\Models\Product::whereKey($item->product_id)->increment('stock', $item->quantite);
-                }
-                $locked->items()->update(['statut' => 'annulee']);
-                $locked->update([
-                    'statut' => 'annulee',
-                    'refunded_at' => now(),
-                    'stripe_refund_id' => $refund->id,
-                ]);
-            });
-
-            return response()->json(['message' => 'Remboursement effectué.', 'refund_id' => $refund->id]);
+            $refundId = $stripe->refund(
+                $order->stripe_payment_intent_id,
+                (int) round((float) $order->total * 100),
+                (string) $order->id
+            );
         } catch (Throwable $e) {
             report($e);
             return response()->json(['message' => 'Le remboursement Stripe a échoué.'], 502);
         }
+
+        $refunded = DB::transaction(function () use ($order, $refundId) {
+            $locked = Order::whereKey($order->id)->lockForUpdate()->firstOrFail();
+            if ($locked->refunded_at) {
+                return false; // déjà traité par une requête concurrente (même remboursement Stripe)
+            }
+
+            foreach ($locked->items()->whereNotNull('product_id')->get() as $item) {
+                Product::whereKey($item->product_id)->increment('stock', $item->quantite);
+            }
+            $locked->items()->update(['statut' => 'annulee']);
+            // Rien n'a encore été versé pour ces lignes : on n'y touchera plus.
+            $locked->items()
+                ->whereIn('seller_transfer_status', SellerPayoutService::TRANSFERABLE)
+                ->update(['seller_transfer_status' => 'cancelled']);
+            $locked->update([
+                'statut' => 'annulee',
+                'refunded_at' => now(),
+                'stripe_refund_id' => $refundId,
+            ]);
+
+            return true;
+        });
+
+        if ($refunded) {
+            $this->reverseSellerTransfers($order, $stripe);
+        }
+
+        return response()->json(['message' => 'Remboursement effectué.', 'refund_id' => $refundId]);
     }
 
-    public function webhook(Request $request, StripeConnectService $stripeConnect)
+    public function webhook(Request $request, StripeConnectService $stripeConnect, SellerPayoutService $payouts)
     {
         $payload = $request->getContent();
         $sigHeader = $request->header('Stripe-Signature');
@@ -137,10 +153,21 @@ class PaymentController extends Controller
             return response()->json(['received' => true]);
         }
 
-        $order = DB::transaction(function () use ($orderId, $paymentIntent) {
+        $chargeId = $paymentIntent->latest_charge ?? null;
+        if (is_object($chargeId)) {
+            $chargeId = $chargeId->id ?? null;
+        }
+
+        $result = DB::transaction(function () use ($orderId, $paymentIntent, $chargeId) {
             $order = Order::with('items.shop')->whereKey($orderId)->lockForUpdate()->first();
             if (! $order) {
                 return null;
+            }
+
+            // Paiement arrivé après l'annulation (expiration ou admin) : le stock a déjà
+            // été remis en vente, on rembourse l'acheteur au lieu de garder l'argent.
+            if ($order->statut === 'annulee' && ! $order->paid_at) {
+                return $order->refunded_at ? null : ['refund' => $order];
             }
 
             if ($order->statut === 'en_attente') {
@@ -160,49 +187,73 @@ class PaymentController extends Controller
                 $order->update([
                     'statut' => 'payee',
                     'stripe_payment_intent_id' => $paymentIntent->id,
+                    'stripe_charge_id' => $chargeId,
                     'paid_at' => now(),
                 ]);
             }
 
-            return $order->fresh(['items.shop']);
+            return ['pay' => $order->fresh(['items.shop'])];
         });
 
-        if (! $order) {
+        if (isset($result['refund'])) {
+            if (! $this->refundLatePayment($result['refund'], $paymentIntent, $stripeConnect)) {
+                // Réponse en erreur : Stripe renverra l'événement plus tard.
+                return response()->json(['error' => 'Remboursement à réessayer'], 500);
+            }
             return response()->json(['received' => true]);
         }
 
-        // Une commande peut contenir plusieurs boutiques : un transfer par boutique.
-        foreach ($order->items->groupBy('shop_id') as $shopItems) {
-            $shop = $shopItems->first()->shop;
-            if (! $shop || ! $shop->stripe_account_id || ! $shop->is_active) {
-                $shopItems->each(fn ($item) => $item->update(['seller_transfer_status' => 'blocked']));
-                continue;
-            }
-
-            $amount = (int) round($shopItems->sum(fn ($item) => (float) $item->seller_amount) * 100);
-            if ($amount <= 0) {
-                $shopItems->each(fn ($item) => $item->update(['seller_transfer_status' => 'completed']));
-                continue;
-            }
-
-            try {
-                $transferId = $stripeConnect->transfer(
-                    $amount,
-                    $shop,
-                    'marketlocal-transfer-order-'.$order->id.'-shop-'.$shop->id,
-                    (string) $order->id
-                );
-
-                $shopItems->each(fn ($item) => $item->update([
-                    'stripe_transfer_id' => $transferId,
-                    'seller_transfer_status' => 'completed',
-                ]));
-            } catch (Throwable $e) {
-                report($e);
-                $shopItems->each(fn ($item) => $item->update(['seller_transfer_status' => 'failed']));
+        if (isset($result['pay'])) {
+            $order = $result['pay'];
+            // Une commande peut contenir plusieurs boutiques : un transfer par boutique.
+            // Seules les lignes « pending » : un webhook rejoué ne reverse rien deux fois.
+            $pending = $order->items->where('seller_transfer_status', 'pending');
+            foreach ($pending->groupBy('shop_id') as $shopItems) {
+                $payouts->transferShopItems($order, $shopItems->first()->shop, $shopItems);
             }
         }
 
         return response()->json(['received' => true]);
+    }
+
+    private function refundLatePayment(Order $order, $paymentIntent, StripeConnectService $stripe): bool
+    {
+        try {
+            $refundId = $stripe->refund($paymentIntent->id, (int) $paymentIntent->amount_received, (string) $order->id);
+        } catch (Throwable $e) {
+            report($e);
+            return false;
+        }
+
+        $order->update([
+            'stripe_payment_intent_id' => $paymentIntent->id,
+            'refunded_at' => now(),
+            'stripe_refund_id' => $refundId,
+        ]);
+
+        return true;
+    }
+
+    /** Reprend aux vendeurs les montants déjà transférés pour une commande remboursée. */
+    private function reverseSellerTransfers(Order $order, StripeConnectService $stripe): void
+    {
+        $transferred = $order->items()
+            ->whereNotNull('stripe_transfer_id')
+            ->where('seller_transfer_status', 'completed')
+            ->get()
+            ->groupBy('stripe_transfer_id');
+
+        foreach ($transferred as $transferId => $items) {
+            try {
+                $stripe->reverseTransfer($transferId, 'marketlocal-reverse-'.$transferId);
+                $status = 'reversed';
+            } catch (Throwable $e) {
+                // Ex. solde vendeur insuffisant : à régulariser à la main depuis le dashboard Stripe.
+                report($e);
+                $status = 'reversal_failed';
+            }
+
+            $items->each(fn ($item) => $item->update(['seller_transfer_status' => $status]));
+        }
     }
 }
