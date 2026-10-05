@@ -244,3 +244,16 @@ test('le chiffre d affaires admin ne compte que les commandes payées', function
         ->assertOk()
         ->assertJson(['chiffre_affaires_total' => 200, 'commissions_total' => 20]);
 });
+
+test('les statistiques vendeur déduisent la commission', function () {
+    $shop = makeShop('h@example.com', ['commission' => 10]);
+    $order = placeOrder(makeUser('acheteur', 'b8@example.com'), [makeProduct($shop, 100)->id => 2]);
+
+    $this->mock(StripeConnectService::class)->shouldReceive('transfer')->andReturn('tr_h');
+    sendPaymentSucceeded($order, 20000)->assertOk();
+
+    $this->actingAs($shop->user, 'sanctum')
+        ->getJson('/api/shop/stats')
+        ->assertOk()
+        ->assertJson(['chiffre_affaires_brut' => 200, 'chiffre_affaires_net' => 180]);
+});
