@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\OrderItem;
 use App\Models\Shop;
+use App\Services\SellerPayoutService;
 use App\Services\StripeConnectService;
 use Illuminate\Http\Request;
 use Throwable;
@@ -32,30 +34,28 @@ class StripeConnectController extends Controller
         }
     }
 
-    public function settlePendingTransfers(Request $request, StripeConnectService $stripe)
+    public function settlePendingTransfers(Request $request, SellerPayoutService $payouts)
     {
         $shop = $request->user()->shop;
         if (! $shop || ! $shop->stripe_account_id || ! $shop->is_active) {
             return response()->json(['message' => 'Votre compte Stripe vendeur n’est pas encore actif.'], 409);
         }
 
-        $items = \App\Models\OrderItem::with('order')
+        // Uniquement des commandes réellement payées et non remboursées : seller_amount
+        // (part vendeur, commission déduite) n'est calculé qu'à la confirmation du paiement.
+        $items = OrderItem::with('order')
             ->where('shop_id', $shop->id)
-            ->whereIn('seller_transfer_status', ['pending', 'failed'])
-            ->whereHas('order', fn ($q) => $q->where('statut', '!=', 'annulee'))
+            ->whereIn('seller_transfer_status', SellerPayoutService::TRANSFERABLE)
+            ->whereNotNull('seller_amount')
+            ->whereHas('order', fn ($q) => $q
+                ->whereIn('statut', SellerPayoutService::PAID_STATUSES)
+                ->whereNull('refunded_at'))
             ->get();
 
         $done = 0;
-        foreach ($items->groupBy('order_id') as $orderId => $orderItems) {
-            $amount = (int) round($orderItems->sum(fn ($item) => (float) ($item->seller_amount ?? ((float) $item->prix_unitaire * $item->quantite))) * 100);
-            if ($amount <= 0) continue;
-            try {
-                $transferId = $stripe->transfer($amount, $shop, 'marketlocal-transfer-order-'.$orderId.'-shop-'.$shop->id, (string) $orderId);
-                $orderItems->each(fn ($item) => $item->update(['stripe_transfer_id' => $transferId, 'seller_transfer_status' => 'completed']));
+        foreach ($items->groupBy('order_id') as $orderItems) {
+            if ($payouts->transferShopItems($orderItems->first()->order, $shop, $orderItems) === 'completed') {
                 $done++;
-            } catch (Throwable $e) {
-                report($e);
-                $orderItems->each(fn ($item) => $item->update(['seller_transfer_status' => 'failed']));
             }
         }
 

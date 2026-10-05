@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
 use App\Models\Order;
+use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\Shop;
 use App\Models\User;
+use App\Services\SellerPayoutService;
 
 // Toutes les routes de ce contrôleur sont protégées par le middleware
 // role:admin (voir routes/api.php) : plus de vérification manuelle ici.
@@ -26,7 +28,13 @@ class AdminController extends Controller
             'total_commandes' => Order::count(),
             // (float) : sum() sur une colonne decimal renvoie une chaîne via PDO,
             // ce qui cassait .toFixed() côté frontend.
-            'chiffre_affaires_total' => (float) Order::where('statut', '!=', 'annulee')->sum('total'),
+            // Seules les commandes réellement payées (ni en attente, ni annulées/remboursées).
+            'chiffre_affaires_total' => (float) Order::whereIn('statut', SellerPayoutService::PAID_STATUSES)->sum('total'),
+            // Revenu de la plateforme : commissions figées au paiement.
+            'commissions_total' => (float) OrderItem::whereHas(
+                'order',
+                fn ($q) => $q->whereIn('statut', SellerPayoutService::PAID_STATUSES)
+            )->sum('commission_amount'),
         ]);
     }
 
