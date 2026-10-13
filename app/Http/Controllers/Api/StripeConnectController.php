@@ -28,7 +28,9 @@ class StripeConnectController extends Controller
             return response()->json(['url' => $url]);
         } catch (Throwable $e) {
             report($e);
-            return response()->json(['message' => "Impossible de démarrer l'onboarding Stripe."], 502);
+            // En local (APP_DEBUG=true), on affiche la vraie raison donnée par Stripe pour pouvoir corriger.
+            $detail = config('app.debug') ? ' Détail : '.$e->getMessage() : '';
+            return response()->json(['message' => "Impossible de démarrer l'onboarding Stripe.".$detail], 502);
         }
     }
 
@@ -41,16 +43,31 @@ class StripeConnectController extends Controller
 
         $items = \App\Models\OrderItem::with('order')
             ->where('shop_id', $shop->id)
-            ->whereIn('seller_transfer_status', ['pending', 'failed'])
-            ->whereHas('order', fn ($q) => $q->where('statut', '!=', 'annulee'))
+            // « blocked » : boutique pas encore activée sur Stripe au moment du paiement.
+            ->whereIn('seller_transfer_status', ['pending', 'failed', 'blocked'])
+            // Uniquement les commandes réellement payées par carte : une commande non payée
+            // ou réglée à la livraison (le vendeur a encaissé lui-même) ne donne lieu à aucun virement.
+            ->whereHas('order', fn ($q) => $q->where('statut', '!=', 'annulee')
+                ->where('mode_paiement', \App\Models\Order::PAIEMENT_CARTE)
+                ->whereNotNull('paid_at'))
             ->get();
 
         $done = 0;
         foreach ($items->groupBy('order_id') as $orderId => $orderItems) {
-            $amount = (int) round($orderItems->sum(fn ($item) => (float) ($item->seller_amount ?? ((float) $item->prix_unitaire * $item->quantite))) * 100);
+            // Ligne sans montants figés : on les calcule (commission déduite) au lieu de
+            // verser le prix brut au vendeur.
+            $orderItems->each(function ($item) use ($shop) {
+                if ($item->seller_amount === null) {
+                    $item->setRelation('shop', $shop);
+                    $item->settleAmounts($item->seller_transfer_status);
+                }
+            });
+
+            $amount = (int) round($orderItems->sum(fn ($item) => (float) $item->seller_amount) * 100);
             if ($amount <= 0) continue;
             try {
-                $transferId = $stripe->transfer($amount, $shop, 'marketlocal-transfer-order-'.$orderId.'-shop-'.$shop->id, (string) $orderId);
+                $sourceCharge = $stripe->chargeIdFor($orderItems->first()->order?->stripe_payment_intent_id);
+                $transferId = $stripe->transfer($amount, $shop, 'marketlocal-transfer-order-'.$orderId.'-shop-'.$shop->id, (string) $orderId, $sourceCharge);
                 $orderItems->each(fn ($item) => $item->update(['stripe_transfer_id' => $transferId, 'seller_transfer_status' => 'completed']));
                 $done++;
             } catch (Throwable $e) {

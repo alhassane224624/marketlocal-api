@@ -20,7 +20,10 @@ class RegisterRequest extends ApiFormRequest
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', 'min:8', 'confirmed'],
             // Le rôle admin ne peut jamais être choisi à l'inscription.
-            'role' => ['required', 'in:acheteur,vendeur'],
+            'role' => ['required', 'in:acheteur,vendeur,livreur'],
+            // Le livreur doit pouvoir être joint par le vendeur et l'acheteur.
+            'telephone' => ['required_if:role,livreur', 'nullable', 'string', 'max:20'],
+            'ville' => ['nullable', 'string', 'max:100'],
         ];
     }
 }

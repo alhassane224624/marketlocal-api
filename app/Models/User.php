@@ -52,4 +52,10 @@ class User extends Authenticatable
     {
         return $this->hasMany(Address::class);
     }
+
+    // Courses du livreur.
+    public function deliveries()
+    {
+        return $this->hasMany(Delivery::class, 'livreur_id');
+    }
 }

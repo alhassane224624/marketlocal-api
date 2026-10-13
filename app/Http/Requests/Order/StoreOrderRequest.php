@@ -3,6 +3,8 @@
 namespace App\Http\Requests\Order;
 
 use App\Http\Requests\ApiFormRequest;
+use App\Models\Order;
+use Illuminate\Validation\Rule;
 
 class StoreOrderRequest extends ApiFormRequest
 {
@@ -12,6 +14,9 @@ class StoreOrderRequest extends ApiFormRequest
             'items' => ['required', 'array', 'min:1', 'max:50'],
             'items.*.product_id' => ['required', 'integer', 'distinct', 'exists:products,id'],
             'items.*.quantite' => ['required', 'integer', 'min:1', 'max:100'],
+
+            // carte (Stripe, par défaut) ou livraison (espèces à la réception).
+            'mode_paiement' => ['nullable', Rule::in(Order::MODES_PAIEMENT)],
 
             // Option A (recommandée) : sélectionner une adresse enregistrée.
             // Doit appartenir à l'acheteur connecté (vérifié dans le contrôleur).

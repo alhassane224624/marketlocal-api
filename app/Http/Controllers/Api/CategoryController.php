@@ -33,7 +33,7 @@ class CategoryController extends Controller
     // DELETE /api/admin/categories/{category}
     public function destroy(Category $category)
     {
-        if ($category->products()->exists()) {
+        if ($category->products()->exists() || $category->mainProducts()->exists()) {
             return response()->json([
                 'message' => 'Impossible de supprimer une catégorie contenant des produits',
             ], 409);

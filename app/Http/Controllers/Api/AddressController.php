@@ -53,6 +53,12 @@ class AddressController extends Controller
 
         $data = $request->validated();
 
+        // On ne peut pas « retirer » le statut par défaut de l'adresse par défaut :
+        // l'utilisateur se retrouverait sans adresse par défaut. Il faut en choisir une autre.
+        if ($address->est_par_defaut) {
+            unset($data['est_par_defaut']);
+        }
+
         DB::transaction(function () use ($address, $data) {
             if (! empty($data['est_par_defaut'])) {
                 $address->user->addresses()->update(['est_par_defaut' => false]);

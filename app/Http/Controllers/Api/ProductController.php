@@ -8,8 +8,11 @@ use App\Http\Requests\Product\StoreProductRequest;
 use App\Http\Requests\Product\UpdateProductRequest;
 use App\Http\Resources\ProductResource;
 use App\Models\Product;
+use App\Models\ProductImage;
 use App\Services\CloudinaryService;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
 
@@ -17,10 +20,17 @@ class ProductController extends Controller
 {
     public function index(ListProductsRequest $request)
     {
-        $query = Product::with(['shop:id,nom,logo', 'category:id,nom'])
+        $query = Product::with(['shop:id,nom,logo', 'category:id,nom', 'categories:id,nom'])
+            ->withAvg('reviews', 'note')
+            ->withCount('reviews')
             ->whereHas('shop', fn ($q) => $q->where('statut', 'valide'));
 
-        if ($request->filled('category_id')) $query->where('category_id', $request->input('category_id'));
+        if ($request->filled('category_id')) {
+            $categoryId = (int) $request->input('category_id');
+            // Catégorie principale ou secondaire.
+            $query->where(fn ($q) => $q->where('category_id', $categoryId)
+                ->orWhereHas('categories', fn ($c) => $c->whereKey($categoryId)));
+        }
         if ($request->filled('shop_id')) $query->where('shop_id', $request->input('shop_id'));
         if ($request->filled('prix_min')) $query->where('prix', '>=', $request->input('prix_min'));
         if ($request->filled('prix_max')) $query->where('prix', '<=', $request->input('prix_max'));
@@ -37,7 +47,11 @@ class ProductController extends Controller
 
     public function show(Request $request, Product $product)
     {
-        $product->load(['shop:id,nom,logo,statut,user_id', 'category:id,nom', 'reviews']);
+        $product->load([
+            'shop:id,nom,logo,statut,user_id', 'category:id,nom', 'categories:id,nom', 'images',
+            // Auteur de chaque avis (nom affiché sur la fiche produit), plus récents d'abord.
+            'reviews' => fn ($q) => $q->with('user:id,name')->latest(),
+        ])->loadAvg('reviews', 'note')->loadCount('reviews');
         $user = $request->user();
         $isOwner = $user && $user->role === 'vendeur' && (int) $product->shop?->user_id === (int) $user->id;
         $isAdmin = $user && $user->role === 'admin';
@@ -57,43 +71,103 @@ class ProductController extends Controller
             return response()->json(['message' => 'Votre boutique doit être validée avant de publier des produits.'], 409);
         }
 
-        $data = $request->safe()->only(['nom', 'description', 'prix', 'stock', 'category_id']);
-        $data['shop_id'] = $shop->id;
-
-        try {
-            if ($request->hasFile('image')) {
-                $uploaded = $images->upload($request->file('image'), 'products');
-                $data['image'] = $uploaded['url'];
-                $data['image_public_id'] = $uploaded['public_id'];
-            }
-            $product = Product::create($data);
-        } catch (Throwable $e) {
-            report($e);
-            return response()->json(['message' => "Impossible d'enregistrer l'image du produit."], 422);
+        $files = $this->uploadedFiles($request);
+        if (count($files) > Product::MAX_IMAGES) {
+            return response()->json(['message' => 'Un produit peut avoir au maximum '.Product::MAX_IMAGES.' images.'], 422);
         }
 
-        return response()->json(ProductResource::make($product)->resolve(), 201);
+        $data = $request->safe()->only(['nom', 'description', 'prix', 'stock']);
+        $data['shop_id'] = $shop->id;
+        $categoryIds = $this->requestedCategoryIds($request);
+        $data['category_id'] = $categoryIds[0];
+
+        $uploaded = [];
+        try {
+            $uploaded = $this->uploadAll($files, $images);
+
+            $product = DB::transaction(function () use ($data, $categoryIds, $uploaded) {
+                $product = Product::create($data);
+                $product->categories()->attach($categoryIds);
+                foreach ($uploaded as $position => $image) {
+                    $product->images()->create([
+                        'url' => $image['url'],
+                        'public_id' => $image['public_id'],
+                        'position' => $position,
+                    ]);
+                }
+                $product->syncCoverAndMainCategory();
+
+                return $product;
+            });
+        } catch (Throwable $e) {
+            report($e);
+            $this->deleteFiles($uploaded, $images);
+            return response()->json(['message' => "Impossible d'enregistrer les images du produit."], 422);
+        }
+
+        return response()->json(
+            ProductResource::make($product->fresh(['category', 'categories', 'images']))->resolve(),
+            201
+        );
     }
 
     public function update(UpdateProductRequest $request, Product $product, CloudinaryService $images)
     {
-        $data = $request->safe()->only(['nom', 'description', 'prix', 'stock', 'category_id']);
+        $data = $request->safe()->only(['nom', 'description', 'prix', 'stock']);
 
-        try {
-            if ($request->hasFile('image')) {
-                $uploaded = $images->upload($request->file('image'), 'products');
-                $images->delete($product->image_public_id);
-                $this->deleteLocalImage($product->image);
-                $data['image'] = $uploaded['url'];
-                $data['image_public_id'] = $uploaded['public_id'];
-            }
-            $product->update($data);
-        } catch (Throwable $e) {
-            report($e);
-            return response()->json(['message' => "Impossible de mettre à jour l'image du produit."], 422);
+        $removeIds = array_map('intval', $request->input('remove_image_ids', []));
+        $toRemove = $product->images()->whereIn('id', $removeIds)->get();
+        $files = $this->uploadedFiles($request);
+
+        $remaining = $product->images()->reorder()->count() - $toRemove->count() + count($files);
+        if ($remaining > Product::MAX_IMAGES) {
+            return response()->json(['message' => 'Un produit peut avoir au maximum '.Product::MAX_IMAGES.' images.'], 422);
         }
 
-        return response()->json(ProductResource::make($product->fresh())->resolve());
+        $categoryIds = $request->hasAny(['category_ids', 'category_id'])
+            ? $this->requestedCategoryIds($request)
+            : null;
+
+        $uploaded = [];
+        try {
+            $uploaded = $this->uploadAll($files, $images);
+
+            DB::transaction(function () use ($product, $data, $categoryIds, $toRemove, $uploaded, $request) {
+                $product->update($data);
+
+                if ($categoryIds !== null) {
+                    // detach + attach (plutôt que sync) pour respecter l'ordre demandé :
+                    // la 1re catégorie devient la principale.
+                    $product->categories()->detach();
+                    $product->categories()->attach($categoryIds);
+                }
+
+                ProductImage::whereIn('id', $toRemove->pluck('id'))->delete();
+
+                $next = (int) $product->images()->reorder()->max('position') + 1;
+                foreach ($uploaded as $i => $image) {
+                    $product->images()->create([
+                        'url' => $image['url'],
+                        'public_id' => $image['public_id'],
+                        'position' => $next + $i,
+                    ]);
+                }
+
+                $this->reorderImages($product, $request->integer('cover_image_id') ?: null);
+                $product->syncCoverAndMainCategory();
+            });
+        } catch (Throwable $e) {
+            report($e);
+            $this->deleteFiles($uploaded, $images);
+            return response()->json(['message' => 'Impossible de mettre à jour les images du produit.'], 422);
+        }
+
+        // Fichiers supprimés seulement une fois la base à jour.
+        $this->deleteFiles($toRemove->map(fn ($image) => ['url' => $image->url, 'public_id' => $image->public_id])->all(), $images);
+
+        return response()->json(
+            ProductResource::make($product->fresh(['category', 'categories', 'images']))->resolve()
+        );
     }
 
     public function destroy(Request $request, Product $product, CloudinaryService $images)
@@ -103,11 +177,81 @@ class ProductController extends Controller
             return response()->json(['message' => 'Non autorisé'], 403);
         }
 
-        $images->delete($product->image_public_id);
-        $this->deleteLocalImage($product->image);
+        $files = $product->images->map(fn ($image) => ['url' => $image->url, 'public_id' => $image->public_id])->all();
+        if ($product->image && ! collect($files)->contains('url', $product->image)) {
+            $files[] = ['url' => $product->image, 'public_id' => $product->image_public_id];
+        }
+
         $product->delete();
+        $this->deleteFiles($files, $images);
 
         return response()->json(['message' => 'Produit supprimé']);
+    }
+
+    /** @return UploadedFile[] */
+    private function uploadedFiles(Request $request): array
+    {
+        $files = array_values(array_filter((array) $request->file('images', [])));
+        if ($request->hasFile('image')) {
+            $files[] = $request->file('image');
+        }
+
+        return $files;
+    }
+
+    /** @return int[] */
+    private function requestedCategoryIds(Request $request): array
+    {
+        $ids = $request->input('category_ids') ?: [$request->input('category_id')];
+
+        return array_values(array_unique(array_map('intval', $ids)));
+    }
+
+    /**
+     * Upload de toutes les images ; si l'une échoue, les précédentes sont supprimées.
+     */
+    private function uploadAll(array $files, CloudinaryService $images): array
+    {
+        $uploaded = [];
+        try {
+            foreach ($files as $file) {
+                $uploaded[] = $images->upload($file, 'products');
+            }
+        } catch (Throwable $e) {
+            $this->deleteFiles($uploaded, $images);
+            throw $e;
+        }
+
+        return $uploaded;
+    }
+
+    /**
+     * Renumérote les positions 0..n ; l'image $coverId (si elle appartient au produit) passe en tête.
+     */
+    private function reorderImages(Product $product, ?int $coverId): void
+    {
+        $ordered = $product->images()->get();
+        if ($coverId && ($cover = $ordered->firstWhere('id', $coverId))) {
+            $ordered = $ordered->reject(fn ($image) => $image->id === $cover->id)->prepend($cover);
+        }
+
+        foreach ($ordered->values() as $position => $image) {
+            if ((int) $image->position !== $position) {
+                $image->update(['position' => $position]);
+            }
+        }
+    }
+
+    private function deleteFiles(array $files, CloudinaryService $images): void
+    {
+        foreach ($files as $file) {
+            try {
+                $images->delete($file['public_id'] ?? null);
+                $this->deleteLocalImage($file['url'] ?? null);
+            } catch (Throwable $e) {
+                report($e);
+            }
+        }
     }
 
     private function deleteLocalImage(?string $url): void

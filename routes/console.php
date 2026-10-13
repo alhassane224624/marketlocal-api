@@ -12,3 +12,6 @@ Artisan::command('inspire', function () {
 // En production : un vrai cron doit appeler `php artisan schedule:run` chaque minute.
 // En local : `php artisan schedule:work` (à laisser tourner dans un terminal).
 Schedule::command('orders:cancel-expired')->everyFifteenMinutes();
+
+// Confirme la réception des colis livrés sans réponse du client après 48 h (toutes les heures).
+Schedule::command('deliveries:auto-confirm')->hourly();

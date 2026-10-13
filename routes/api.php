@@ -4,6 +4,8 @@ use App\Http\Controllers\Api\AddressController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\DeliveryController;
+use App\Http\Controllers\Api\DisputeController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\ProductController;
@@ -23,6 +25,8 @@ Route::middleware('throttle:api')->group(function () {
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
 
     Route::get('/categories', [CategoryController::class, 'index']);
+    Route::get('/payment-methods', [PaymentController::class, 'methods']);
+    Route::get('/livraison/tarif', [PaymentController::class, 'deliveryFee']);
     Route::get('/shops', [ShopController::class, 'index']);
     Route::get('/products', [ProductController::class, 'index']);
     Route::get('/products/{product}', [ProductController::class, 'show'])->whereNumber('product');
@@ -54,6 +58,9 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
             ->whereNumber('order')
             ->middleware('throttle:sensitive');
         Route::post('/products/{product}/reviews', [ReviewController::class, 'store'])->whereNumber('product');
+        // Double confirmation : le client confirme la réception du colis, ou signale un problème.
+        Route::post('/commandes/livraisons/{delivery}/confirmer', [DeliveryController::class, 'confirmReceipt'])->whereNumber('delivery');
+        Route::post('/commandes/livraisons/{delivery}/signaler', [DeliveryController::class, 'reportProblem'])->whereNumber('delivery');
     });
 
     // Détail d'une commande : acheteur, vendeur concerné ou admin (contrôlé dans le contrôleur)
@@ -70,12 +77,28 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
         Route::delete('/products/{product}', [ProductController::class, 'destroy'])->whereNumber('product');
 
         Route::get('/shop/orders', [OrderController::class, 'shopOrders']);
+        // Publier une course pour faire livrer ses articles par un livreur.
+        Route::post('/shop/orders/{order}/livreur', [DeliveryController::class, 'request'])->whereNumber('order');
         Route::get('/shop/stats', [OrderController::class, 'shopStats']);
         Route::get('/shop/reviews', [ReviewController::class, 'shopReviews']);
 
         Route::post('/shop/stripe/onboard', [StripeConnectController::class, 'onboard']);
         Route::get('/shop/stripe/status', [StripeConnectController::class, 'status']);
         Route::post('/shop/stripe/settle-pending', [StripeConnectController::class, 'settlePendingTransfers']);
+    });
+
+    // --- Livreur : courses libres (type Glovo) ---
+    Route::prefix('livraisons')->middleware('role:livreur')->group(function () {
+        Route::get('/disponibles', [DeliveryController::class, 'available']);
+        Route::get('/mine', [DeliveryController::class, 'mine']);
+        Route::get('/gains', [DeliveryController::class, 'earnings']);
+        Route::post('/{delivery}/position', [DeliveryController::class, 'position'])->whereNumber('delivery');
+        Route::post('/{delivery}/accepter', [DeliveryController::class, 'accept'])->whereNumber('delivery');
+        Route::post('/{delivery}/abandonner', [DeliveryController::class, 'release'])->whereNumber('delivery');
+        Route::post('/{delivery}/recuperer', [DeliveryController::class, 'pickUp'])->whereNumber('delivery');
+        // Limité : le code à 4 chiffres ne doit pas pouvoir être deviné par essais successifs.
+        Route::post('/{delivery}/livrer', [DeliveryController::class, 'deliver'])->whereNumber('delivery')
+            ->middleware('throttle:sensitive');
     });
 
     // --- Vendeur ou admin : changer le statut d'une commande ---
@@ -87,6 +110,10 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
     Route::prefix('admin')->middleware('role:admin')->group(function () {
         Route::get('/stats', [AdminController::class, 'stats']);
         Route::get('/users', [AdminController::class, 'users']);
+        Route::get('/livreurs', [AdminController::class, 'livreurs']);
+        Route::get('/litiges', [DisputeController::class, 'index']);
+        Route::post('/litiges/{delivery}/resoudre', [DisputeController::class, 'resolve'])->whereNumber('delivery');
+        Route::post('/livreurs/{user}/payer', [AdminController::class, 'payLivreur'])->whereNumber('user');
         Route::get('/orders', [OrderController::class, 'adminIndex']);
         Route::post('/orders/{order}/rembourser', [PaymentController::class, 'refund'])->whereNumber('order');
 

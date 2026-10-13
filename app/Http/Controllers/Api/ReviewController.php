@@ -25,9 +25,12 @@ class ReviewController extends Controller
     {
         $user = $request->user();
 
+        // On regarde le statut de l'article (pas de la commande) : dans une commande
+        // multi-vendeurs payée à la livraison, la commande reste « en_attente » tant que
+        // tous les vendeurs n'ont pas livré, alors que cet article est déjà reçu.
         $hasPurchased = $user->orders()
-            ->whereIn('statut', ['payee', 'expediee', 'livree'])
-            ->whereHas('items', fn ($q) => $q->where('product_id', $product->id))
+            ->whereHas('items', fn ($q) => $q->where('product_id', $product->id)
+                ->whereIn('statut', ['payee', 'expediee', 'livree']))
             ->exists();
 
         if (! $hasPurchased) {

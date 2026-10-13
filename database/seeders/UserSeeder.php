@@ -25,6 +25,15 @@ class UserSeeder extends Seeder
         ]);
 
         User::create([
+            'name' => 'Youssef Livreur',
+            'email' => 'livreur@marketlocal.test',
+            'password' => Hash::make('password'),
+            'role' => 'livreur',
+            'telephone' => '0600000003',
+            'ville' => 'Nador',
+        ]);
+
+        User::create([
             'name' => 'Karim Acheteur',
             'email' => 'acheteur@marketlocal.test',
             'password' => Hash::make('password'),

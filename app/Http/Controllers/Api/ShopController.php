@@ -47,7 +47,7 @@ class ShopController extends Controller
     {
         $shop = $request->user()->shop;
         if (! $shop) return response()->json(['message' => "Vous n'avez pas encore de boutique"], 404);
-        return response()->json(ShopResource::make($shop->load('products.category'))->resolve());
+        return response()->json(ShopResource::make($shop->load(['products.category', 'products.categories']))->resolve());
     }
 
     public function update(UpdateShopRequest $request, CloudinaryService $images)

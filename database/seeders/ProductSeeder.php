@@ -41,5 +41,8 @@ class ProductSeeder extends Seeder
             'prix' => 320.00,
             'stock' => 12,
         ]);
+
+        // Table pivot : chaque produit a au moins sa catégorie principale.
+        Product::all()->each(fn (Product $product) => $product->categories()->syncWithoutDetaching([$product->category_id]));
     }
 }
