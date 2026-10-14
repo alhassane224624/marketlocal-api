@@ -1,4 +1,4 @@
-﻿kind: wasmer.io/App.v0
+kind: wasmer.io/App.v0
 name: marketlocal-api
 owner: alhassanediane62496
 package: .
