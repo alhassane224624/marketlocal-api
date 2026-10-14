@@ -23,7 +23,8 @@ jobs:
         run: curl https://get.wasmer.io -sSfL | sh
 
       - name: Configuration app
-        run: printf 'kind: wasmer.io/App.v0\nname: marketlocal-api\nowner: alhassanediane62496\npackage: .\n' > app.yaml
+        run: |
+          printf 'kind: wasmer.io/App.v0\nname: marketlocal-api\nowner: alhassanediane62496\npackage: .\n' > app.yaml
 
       - name: Deployer
         env:
