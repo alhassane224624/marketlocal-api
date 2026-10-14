@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\AddressController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\CronController;
 use App\Http\Controllers\Api\DeliveryController;
 use App\Http\Controllers\Api\DisputeController;
 use App\Http\Controllers\Api\OrderController;
@@ -13,6 +14,9 @@ use App\Http\Controllers\Api\ReviewController;
 use App\Http\Controllers\Api\ShopController;
 use App\Http\Controllers\Api\StripeConnectController;
 use Illuminate\Support\Facades\Route;
+
+// Tâches planifiées via une URL secrète (hébergeurs sans cron) : voir `php artisan cron:url`.
+Route::get('/cron/{token}', [CronController::class, 'run'])->middleware('throttle:10,1');
 
 // Webhook Stripe : appelé par Stripe (signature vérifiée dans le contrôleur), hors limitation.
 Route::post('/stripe/webhook', [PaymentController::class, 'webhook']);
