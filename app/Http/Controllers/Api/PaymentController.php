@@ -49,7 +49,7 @@ class PaymentController extends Controller
         return response()->json(['frais_par_colis' => Order::fraisParColis()]);
     }
 
-    public function createPaymentIntent(Request $request, Order $order)
+    public function createPaymentIntent(Request $request, Order $order, StripeConnectService $stripeConnect)
     {
         if ((int) $order->buyer_id !== (int) $request->user()->id) {
             return response()->json(['message' => 'Non autorisé'], 403);
@@ -67,9 +67,28 @@ class PaymentController extends Controller
             return response()->json(['message' => "Le paiement Stripe n'est pas configuré sur le serveur."], 503);
         }
 
+        $idempotencyKey = 'marketlocal-order-payment-'.$order->id;
+
         if ($order->stripe_payment_intent_id) {
             $intent = PaymentIntent::retrieve($order->stripe_payment_intent_id);
-            return response()->json(['client_secret' => $intent->client_secret]);
+
+            // Déjà payé mais le webhook n'est pas (encore) passé : on valide la commande ici.
+            if ($intent->status === 'succeeded') {
+                $this->processSucceededIntent($intent, $stripeConnect);
+
+                return response()->json([
+                    'message' => 'Paiement déjà reçu : votre commande est payée.',
+                    'paid' => true,
+                ], 409);
+            }
+
+            // Paiement encore utilisable : on le réutilise.
+            if ($intent->status !== 'canceled') {
+                return response()->json(['client_secret' => $intent->client_secret]);
+            }
+
+            // Paiement annulé côté Stripe : on en recrée un (nouvelle clé d'idempotence).
+            $idempotencyKey .= '-after-'.$intent->id;
         }
 
         $items = $order->items()->with('shop')->get();
@@ -88,7 +107,7 @@ class PaymentController extends Controller
             'automatic_payment_methods' => ['enabled' => true],
             'metadata' => ['order_id' => (string) $order->id],
         ], [
-            'idempotency_key' => 'marketlocal-order-payment-'.$order->id,
+            'idempotency_key' => $idempotencyKey,
         ]);
 
         $order->update(['stripe_payment_intent_id' => $paymentIntent->id]);
@@ -195,10 +214,21 @@ class PaymentController extends Controller
             return response()->json(['received' => true]);
         }
 
-        $paymentIntent = $event->data->object;
+        $this->processSucceededIntent($event->data->object, $stripeConnect);
+
+        return response()->json(['received' => true]);
+    }
+
+    /**
+     * Valide une commande payée et vire leur part aux vendeurs.
+     * Appelé par le webhook, ou au retour sur la page de paiement si le webhook n'est pas passé.
+     * Rejouable sans risque (verrou + statuts des lignes).
+     */
+    private function processSucceededIntent($paymentIntent, StripeConnectService $stripeConnect): void
+    {
         $orderId = $paymentIntent->metadata->order_id ?? null;
         if (! $orderId) {
-            return response()->json(['received' => true]);
+            return;
         }
 
         $order = DB::transaction(function () use ($orderId, $paymentIntent) {
@@ -234,18 +264,18 @@ class PaymentController extends Controller
         });
 
         if (! $order) {
-            return response()->json(['received' => true]);
+            return;
         }
 
         // Paiement arrivé après l'annulation de la commande (expirée ou annulée par l'admin) :
         // le client a été débité pour une commande annulée, on le rembourse.
         if ($order->statut === 'annulee') {
             $this->refundLatePayment($order, $paymentIntent);
-            return response()->json(['received' => true]);
+            return;
         }
 
         if ($order->statut !== 'payee' || $order->refunded_at) {
-            return response()->json(['received' => true]);
+            return;
         }
 
         // Paiement source des virements (voir StripeConnectService::transfer).
@@ -286,8 +316,6 @@ class PaymentController extends Controller
                 $shopItems->each(fn ($item) => $item->update(['seller_transfer_status' => 'failed']));
             }
         }
-
-        return response()->json(['received' => true]);
     }
 
     private function refundLatePayment(Order $order, $paymentIntent): void
