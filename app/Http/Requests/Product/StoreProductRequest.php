@@ -14,6 +14,7 @@ class StoreProductRequest extends ApiFormRequest
             'description' => ['nullable', 'string'],
             'prix' => ['required', 'numeric', 'min:0'],
             'stock' => ['required', 'integer', 'min:0'],
+            'en_vente' => ['sometimes', 'boolean'],
 
             // Plusieurs catégories (la 1re est la catégorie principale).
             // category_id seul reste accepté pour compatibilité.

@@ -79,6 +79,7 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
         Route::post('/products', [ProductController::class, 'store']);
         Route::put('/products/{product}', [ProductController::class, 'update'])->whereNumber('product');
         Route::delete('/products/{product}', [ProductController::class, 'destroy'])->whereNumber('product');
+        Route::put('/products/{product}/vente', [ProductController::class, 'toggleSale'])->whereNumber('product');
 
         Route::get('/shop/orders', [OrderController::class, 'shopOrders']);
         // Publier une course pour faire livrer ses articles par un livreur.

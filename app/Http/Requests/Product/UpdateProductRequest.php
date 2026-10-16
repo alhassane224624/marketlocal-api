@@ -27,6 +27,7 @@ class UpdateProductRequest extends ApiFormRequest
             'description' => ['nullable', 'string'],
             'prix' => ['sometimes', 'required', 'numeric', 'min:0'],
             'stock' => ['sometimes', 'required', 'integer', 'min:0'],
+            'en_vente' => ['sometimes', 'boolean'],
 
             // Si envoyé, remplace la liste des catégories (la 1re devient la principale).
             'category_ids' => ['sometimes', 'required', 'array', 'min:1', 'max:'.Product::MAX_CATEGORIES],

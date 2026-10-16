@@ -27,7 +27,13 @@ class ShopController extends Controller
         $user = $request->user();
         if ($user->shop) return response()->json(['message' => 'Vous avez déjà une boutique'], 409);
 
-        $data = ['user_id' => $user->id, 'nom' => $request->nom, 'description' => $request->description, 'statut' => 'en_attente'];
+        $data = [
+            'user_id' => $user->id,
+            'nom' => $request->nom,
+            'description' => $request->description,
+            'activite' => $request->activite,
+            'statut' => 'en_attente',
+        ];
         try {
             if ($request->hasFile('logo')) {
                 $uploaded = $images->upload($request->file('logo'), 'shops');
@@ -52,9 +58,15 @@ class ShopController extends Controller
 
     public function update(UpdateShopRequest $request, CloudinaryService $images)
     {
-        $shop = $request->user()->shop;
+        // Requête fraîche : la relation peut être en cache (null) si la boutique vient d'être créée.
+        $shop = $request->user()->shop()->first();
         if (! $shop) return response()->json(['message' => "Vous n'avez pas de boutique"], 404);
-        $data = $request->safe()->only(['nom', 'description']);
+        $data = $request->safe()->only(['nom', 'description', 'activite']);
+        // Boutique refusée : la modifier renvoie la demande à l'admin.
+        if ($shop->statut === 'refuse') {
+            $data['statut'] = 'en_attente';
+            $data['motif_refus'] = null;
+        }
 
         try {
             if ($request->hasFile('logo')) {
@@ -74,8 +86,18 @@ class ShopController extends Controller
     }
 
     public function adminIndex() { return ShopResource::collection(Shop::with('user')->latest()->get()); }
-    public function validate(Shop $shop) { $shop->update(['statut' => 'valide']); return response()->json(ShopResource::make($shop)->resolve()); }
-    public function refuse(Shop $shop) { $shop->update(['statut' => 'refuse', 'is_active' => false]); return response()->json(ShopResource::make($shop)->resolve()); }
+    public function validate(Shop $shop)
+    {
+        $shop->update(['statut' => 'valide', 'motif_refus' => null, 'valide_at' => now()]);
+        return response()->json(ShopResource::make($shop->load('user'))->resolve());
+    }
+
+    public function refuse(Request $request, Shop $shop)
+    {
+        $data = $request->validate(['motif' => ['required', 'string', 'min:5', 'max:500']]);
+        $shop->update(['statut' => 'refuse', 'motif_refus' => $data['motif'], 'valide_at' => null]);
+        return response()->json(ShopResource::make($shop->load('user'))->resolve());
+    }
     public function updateCommission(UpdateCommissionRequest $request, Shop $shop) { $shop->update(['commission' => $request->commission]); return response()->json(ShopResource::make($shop)->resolve()); }
 
     private function deleteLocalImage(?string $url): void

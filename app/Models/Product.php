@@ -10,8 +10,19 @@ class Product extends Model
     public const MAX_CATEGORIES = 5;
 
     protected $fillable = [
-        'shop_id', 'category_id', 'nom', 'description', 'prix', 'stock', 'image', 'image_public_id',
+        'shop_id', 'category_id', 'nom', 'description', 'prix', 'stock', 'en_vente', 'image', 'image_public_id',
     ];
+
+    protected function casts(): array
+    {
+        return ['en_vente' => 'boolean'];
+    }
+
+    /** Produits visibles dans le catalogue : en vente, boutique validée. */
+    public function scopeVisible($query)
+    {
+        return $query->where('en_vente', true)->whereHas('shop', fn ($q) => $q->where('statut', 'valide'));
+    }
 
     public function shop() { return $this->belongsTo(Shop::class); }
 

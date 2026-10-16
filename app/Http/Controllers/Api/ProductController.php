@@ -23,7 +23,7 @@ class ProductController extends Controller
         $query = Product::with(['shop:id,nom,logo', 'category:id,nom', 'categories:id,nom'])
             ->withAvg('reviews', 'note')
             ->withCount('reviews')
-            ->whereHas('shop', fn ($q) => $q->where('statut', 'valide'));
+            ->visible();
 
         if ($request->filled('category_id')) {
             $categoryId = (int) $request->input('category_id');
@@ -56,7 +56,8 @@ class ProductController extends Controller
         $isOwner = $user && $user->role === 'vendeur' && (int) $product->shop?->user_id === (int) $user->id;
         $isAdmin = $user && $user->role === 'admin';
 
-        if ($product->shop && $product->shop->statut !== 'valide' && ! $isOwner && ! $isAdmin) {
+        $hidden = ! $product->en_vente || ($product->shop && $product->shop->statut !== 'valide');
+        if ($hidden && ! $isOwner && ! $isAdmin) {
             return response()->json(['message' => 'Produit indisponible'], 404);
         }
 
@@ -76,7 +77,7 @@ class ProductController extends Controller
             return response()->json(['message' => 'Un produit peut avoir au maximum '.Product::MAX_IMAGES.' images.'], 422);
         }
 
-        $data = $request->safe()->only(['nom', 'description', 'prix', 'stock']);
+        $data = $request->safe()->only(['nom', 'description', 'prix', 'stock', 'en_vente']);
         $data['shop_id'] = $shop->id;
         $categoryIds = $this->requestedCategoryIds($request);
         $data['category_id'] = $categoryIds[0];
@@ -113,7 +114,7 @@ class ProductController extends Controller
 
     public function update(UpdateProductRequest $request, Product $product, CloudinaryService $images)
     {
-        $data = $request->safe()->only(['nom', 'description', 'prix', 'stock']);
+        $data = $request->safe()->only(['nom', 'description', 'prix', 'stock', 'en_vente']);
 
         $removeIds = array_map('intval', $request->input('remove_image_ids', []));
         $toRemove = $product->images()->whereIn('id', $removeIds)->get();
@@ -164,6 +165,22 @@ class ProductController extends Controller
 
         // Fichiers supprimés seulement une fois la base à jour.
         $this->deleteFiles($toRemove->map(fn ($image) => ['url' => $image->url, 'public_id' => $image->public_id])->all(), $images);
+
+        return response()->json(
+            ProductResource::make($product->fresh(['category', 'categories', 'images']))->resolve()
+        );
+    }
+
+    // PUT /products/{product}/vente : retirer de la vente / remettre en vente (vendeur propriétaire).
+    public function toggleSale(Request $request, Product $product)
+    {
+        $shopId = $request->user()->shop?->id;
+        if ($shopId === null || (int) $product->shop_id !== (int) $shopId) {
+            return response()->json(['message' => 'Non autorisé'], 403);
+        }
+
+        $data = $request->validate(['en_vente' => ['required', 'boolean']]);
+        $product->update(['en_vente' => (bool) $data['en_vente']]);
 
         return response()->json(
             ProductResource::make($product->fresh(['category', 'categories', 'images']))->resolve()

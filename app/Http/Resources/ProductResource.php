@@ -17,6 +17,7 @@ class ProductResource extends JsonResource
             'description' => $this->description,
             'prix' => $this->prix,
             'stock' => $this->stock,
+            'en_vente' => (bool) ($this->en_vente ?? true),
             // Image de couverture (= 1re image de la galerie).
             'image' => $this->image,
             // Note moyenne et nombre d'avis (withAvg / withCount dans le contrôleur).

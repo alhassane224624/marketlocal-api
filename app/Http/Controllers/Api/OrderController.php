@@ -61,7 +61,7 @@ class OrderController extends Controller
             foreach ($request->validated('items') as $item) {
                 // Verrou : évite de vendre deux fois le même stock.
                 $product = Product::with('shop:id,nom,commission,statut,stripe_account_id,is_active')
-                    ->whereHas('shop', fn ($q) => $q->where('statut', 'valide'))
+                    ->visible()
                     ->lockForUpdate()
                     ->find($item['product_id']);
 
@@ -230,7 +230,7 @@ class OrderController extends Controller
         // Net = ventes moins la commission figée sur chaque ligne
         // (taux actuel de la boutique en repli si une ligne n'en a pas).
         $brut = DB::raw('quantite * prix_unitaire');
-        $net = DB::raw('quantite * prix_unitaire * (1 - COALESCE(taux_commission, ' . $tauxActuel . ') / 100)');
+        $net = DB::raw('quantite * prix_unitaire * (1 - COALESCE(taux_commission, ' . $tauxActuel . ') / 100.0)');
 
         $chiffreAffairesBrut = (float) $baseItems()->sum($brut);
         $chiffreAffairesNet = (float) $baseItems()->sum($net);
