@@ -18,6 +18,9 @@ class ListProductsRequest extends ApiFormRequest
             'prix_max' => ['nullable', 'numeric', 'min:0'],
             'q' => ['nullable', 'string', 'max:100'],
             'page' => ['nullable', 'integer', 'min:1'],
+            // Tri du catalogue et filtre « en stock uniquement ».
+            'tri' => ['nullable', 'in:recent,prix_asc,prix_desc,note'],
+            'en_stock' => ['nullable', 'boolean'],
         ];
     }
 }

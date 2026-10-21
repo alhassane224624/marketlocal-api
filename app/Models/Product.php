@@ -21,7 +21,8 @@ class Product extends Model
     /** Produits visibles dans le catalogue : en vente, boutique validée. */
     public function scopeVisible($query)
     {
-        return $query->where('en_vente', true)->whereHas('shop', fn ($q) => $q->where('statut', 'valide'));
+        return $query->where('en_vente', true)->whereHas('shop', fn ($q) => $q->where('statut', 'valide')
+            ->whereHas('user', fn ($u) => $u->whereNull('suspendu_at')));
     }
 
     public function shop() { return $this->belongsTo(Shop::class); }

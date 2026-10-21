@@ -18,6 +18,7 @@ class ShopController extends Controller
     public function index()
     {
         return Shop::where('statut', 'valide')
+            ->whereHas('user', fn ($u) => $u->whereNull('suspendu_at'))
             ->when(config('services.stripe.connect_required'), fn ($q) => $q->where('is_active', true))
             ->select('id', 'nom', 'logo')->get();
     }

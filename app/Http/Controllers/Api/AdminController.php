@@ -10,6 +10,7 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\Shop;
 use App\Models\User;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 // Toutes les routes de ce contrôleur sont protégées par le middleware
@@ -36,6 +37,13 @@ class AdminController extends Controller
             'chiffre_affaires_total' => round((float) OrderItem::encaissees()->sum(DB::raw('quantite * prix_unitaire')), 2),
             // Revenu de la plateforme : commissions figées sur les lignes encaissées.
             'commissions_total' => round((float) OrderItem::encaissees()->sum('commission_amount'), 2),
+            // À traiter : virements vendeurs (Stripe) non effectués, rémunérations livreurs dues,
+            // comptes suspendus.
+            'virements_vendeurs_en_attente' => round((float) OrderItem::encaissees()
+                ->whereIn('seller_transfer_status', ['pending', 'failed', 'blocked'])->sum('seller_amount'), 2),
+            'virements_vendeurs_echoues' => OrderItem::encaissees()->where('seller_transfer_status', 'failed')->count(),
+            'livreurs_a_payer' => round((float) Delivery::payables()->whereNull('remuneration_payee_at')->sum('remuneration_livreur'), 2),
+            'comptes_suspendus' => User::whereNotNull('suspendu_at')->count(),
         ]);
     }
 
@@ -82,6 +90,31 @@ class AdminController extends Controller
     // GET /api/admin/users
     public function users()
     {
-        return UserResource::collection(User::latest()->get());
+        return UserResource::collection(
+            User::with('shop:id,user_id,nom,statut')->withCount('orders')->latest()->get()
+        );
+    }
+
+    // POST /api/admin/users/{user}/suspendre : bloque la connexion et ferme les sessions ouvertes.
+    // Les produits d'un vendeur suspendu disparaissent du catalogue (Product::scopeVisible).
+    public function suspend(Request $request, User $user)
+    {
+        $data = $request->validate(['motif' => ['required', 'string', 'min:5', 'max:500']]);
+        if ($user->role === 'admin') {
+            return response()->json(['message' => 'Un compte administrateur ne peut pas être suspendu.'], 422);
+        }
+
+        $user->update(['suspendu_at' => now(), 'motif_suspension' => $data['motif']]);
+        $user->tokens()->delete();
+
+        return response()->json(UserResource::make($user->load('shop:id,user_id,nom,statut')->loadCount('orders'))->resolve());
+    }
+
+    // POST /api/admin/users/{user}/reactiver
+    public function reactivate(User $user)
+    {
+        $user->update(['suspendu_at' => null, 'motif_suspension' => null]);
+
+        return response()->json(UserResource::make($user->load('shop:id,user_id,nom,statut')->loadCount('orders'))->resolve());
     }
 }

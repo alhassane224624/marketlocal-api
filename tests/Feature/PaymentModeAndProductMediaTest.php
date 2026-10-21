@@ -217,7 +217,12 @@ test('les statistiques ne comptent que l argent réellement encaissé', function
     // JSON envoie 200.0 sous la forme 200 : on compare la valeur numérique.
     $shop = $this->actingAs($vendeur, 'sanctum')->getJson('/api/shop/stats')->assertOk();
     expect((float) $shop->json('chiffre_affaires_brut'))->toBe(200.0)
-        ->and((float) $shop->json('chiffre_affaires_net'))->toBe(180.0);
+        ->and((float) $shop->json('chiffre_affaires_net'))->toBe(180.0)
+        // Paiement à la livraison : le vendeur a encaissé 180 en espèces, 20 de commission dus.
+        ->and((float) $shop->json('finances.especes'))->toBe(180.0)
+        ->and((float) $shop->json('finances.commission_especes'))->toBe(20.0)
+        ->and((float) $shop->json('finances.verse'))->toBe(0.0)
+        ->and((float) $shop->json('finances.en_attente'))->toBe(0.0);
 
     $stats = $this->actingAs($admin, 'sanctum')->getJson('/api/admin/stats')->assertOk();
     expect((float) $stats->json('chiffre_affaires_total'))->toBe(200.0)

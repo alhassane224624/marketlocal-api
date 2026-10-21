@@ -237,6 +237,27 @@ class OrderController extends Controller
         $chiffreAffairesBrut30j = (float) $baseItems()->whereHas('order', $depuis30j)->sum($brut);
         $chiffreAffairesNet30j = (float) $baseItems()->whereHas('order', $depuis30j)->sum($net);
 
+        // Où en est l'argent du vendeur (lignes encaissées, commission déduite) :
+        //  - verse : virements Stripe effectués ;
+        //  - en_attente : virements Stripe à venir (ou bloqués par un litige) ;
+        //  - especes : encaissé directement par le vendeur (paiement à la livraison),
+        //    dont la commission reste due à la plateforme (commission_especes).
+        $finances = ['verse' => 0.0, 'en_attente' => 0.0, 'especes' => 0.0, 'commission_especes' => 0.0];
+        foreach ($baseItems()->get(['quantite', 'prix_unitaire', 'taux_commission', 'commission_amount', 'seller_amount', 'seller_transfer_status']) as $item) {
+            $gross = (float) $item->prix_unitaire * (int) $item->quantite;
+            $commission = $item->commission_amount !== null
+                ? (float) $item->commission_amount
+                : $gross * (float) ($item->taux_commission ?? $tauxActuel) / 100;
+            $net = $item->seller_amount !== null ? (float) $item->seller_amount : $gross - $commission;
+
+            match ($item->seller_transfer_status) {
+                'completed' => $finances['verse'] += $net,
+                'cash_collected' => [$finances['especes'] += $net, $finances['commission_especes'] += $commission],
+                default => $finances['en_attente'] += $net,
+            };
+        }
+        $finances = array_map(fn ($v) => round($v, 2), $finances);
+
         $ordersOfShop = fn () => Order::whereHas('items', fn ($q) => $q->where('shop_id', $shopId));
 
         return response()->json([
@@ -251,6 +272,7 @@ class OrderController extends Controller
             'chiffre_affaires_brut_30j' => round($chiffreAffairesBrut30j, 2),
             'chiffre_affaires_net_30j' => round($chiffreAffairesNet30j, 2),
             'taux_commission' => $tauxActuel,
+            'finances' => $finances,
         ]);
     }
 

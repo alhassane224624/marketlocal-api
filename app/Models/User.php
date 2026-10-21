@@ -18,6 +18,8 @@ class User extends Authenticatable
         'telephone',
         'adresse',
         'ville',
+        'suspendu_at',
+        'motif_suspension',
     ];
 
     protected $hidden = [
@@ -30,7 +32,13 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'suspendu_at' => 'datetime',
         ];
+    }
+
+    public function isSuspended(): bool
+    {
+        return $this->suspendu_at !== null;
     }
 
     public function shop()

@@ -34,13 +34,25 @@ class ProductController extends Controller
         if ($request->filled('shop_id')) $query->where('shop_id', $request->input('shop_id'));
         if ($request->filled('prix_min')) $query->where('prix', '>=', $request->input('prix_min'));
         if ($request->filled('prix_max')) $query->where('prix', '<=', $request->input('prix_max'));
+        if ($request->boolean('en_stock')) $query->where('stock', '>', 0);
         if ($request->filled('q')) {
             $term = addcslashes($request->input('q'), '\\%_');
-            $query->where('nom', 'like', "%{$term}%");
+            // Nom, description ou nom de la boutique.
+            $query->where(fn ($q) => $q->where('nom', 'like', "%{$term}%")
+                ->orWhere('description', 'like', "%{$term}%")
+                ->orWhereHas('shop', fn ($s) => $s->where('nom', 'like', "%{$term}%")));
         }
 
+        match ($request->input('tri')) {
+            'prix_asc' => $query->orderBy('prix')->orderByDesc('id'),
+            'prix_desc' => $query->orderByDesc('prix')->orderByDesc('id'),
+            // Mieux notés d'abord (MySQL et SQLite placent les NULL, sans avis, à la fin en DESC).
+            'note' => $query->orderByDesc('reviews_avg_note')->orderByDesc('reviews_count')->orderByDesc('id'),
+            default => $query->latest()->orderByDesc('id'),
+        };
+
         return response()->json(
-            $query->latest()->paginate(12)->withQueryString()
+            $query->paginate(12)->withQueryString()
                 ->through(fn (Product $product) => ProductResource::make($product)->resolve())
         );
     }
@@ -48,7 +60,7 @@ class ProductController extends Controller
     public function show(Request $request, Product $product)
     {
         $product->load([
-            'shop:id,nom,logo,statut,user_id', 'category:id,nom', 'categories:id,nom', 'images',
+            'shop:id,nom,logo,statut,user_id', 'shop.user:id,suspendu_at', 'category:id,nom', 'categories:id,nom', 'images',
             // Auteur de chaque avis (nom affiché sur la fiche produit), plus récents d'abord.
             'reviews' => fn ($q) => $q->with('user:id,name')->latest(),
         ])->loadAvg('reviews', 'note')->loadCount('reviews');
@@ -56,7 +68,8 @@ class ProductController extends Controller
         $isOwner = $user && $user->role === 'vendeur' && (int) $product->shop?->user_id === (int) $user->id;
         $isAdmin = $user && $user->role === 'admin';
 
-        $hidden = ! $product->en_vente || ($product->shop && $product->shop->statut !== 'valide');
+        $hidden = ! $product->en_vente
+            || ($product->shop && ($product->shop->statut !== 'valide' || $product->shop->user?->suspendu_at));
         if ($hidden && ! $isOwner && ! $isAdmin) {
             return response()->json(['message' => 'Produit indisponible'], 404);
         }

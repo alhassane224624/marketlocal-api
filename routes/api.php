@@ -115,6 +115,8 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
     Route::prefix('admin')->middleware('role:admin')->group(function () {
         Route::get('/stats', [AdminController::class, 'stats']);
         Route::get('/users', [AdminController::class, 'users']);
+        Route::post('/users/{user}/suspendre', [AdminController::class, 'suspend'])->whereNumber('user');
+        Route::post('/users/{user}/reactiver', [AdminController::class, 'reactivate'])->whereNumber('user');
         Route::get('/livreurs', [AdminController::class, 'livreurs']);
         Route::get('/litiges', [DisputeController::class, 'index']);
         Route::post('/litiges/{delivery}/resoudre', [DisputeController::class, 'resolve'])->whereNumber('delivery');

@@ -43,6 +43,13 @@ class AuthController extends Controller
             return response()->json(['message' => 'Identifiants incorrects'], 401);
         }
 
+        if ($user->isSuspended()) {
+            return response()->json([
+                'message' => 'Votre compte est suspendu'.($user->motif_suspension ? ' ('.$user->motif_suspension.')' : '')
+                    .'. Contactez l’équipe MarketLocal.',
+            ], 403);
+        }
+
         return response()->json([
             'user' => UserResource::make($user)->resolve(),
             'token' => $this->issueToken($user),
