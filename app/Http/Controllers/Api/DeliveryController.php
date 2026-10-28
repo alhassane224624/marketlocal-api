@@ -152,13 +152,27 @@ class DeliveryController extends Controller
         $this->ensureAssigned($request, $delivery);
         $request->validate(['code' => ['required', 'string', 'size:4']]);
 
-        $delivery = DB::transaction(function () use ($delivery, $request) {
+        // Un mauvais code renvoie [statut, message] au lieu d'abort() : le compteur d'erreurs
+        // doit être enregistré, alors qu'une exception annulerait la transaction.
+        $result = DB::transaction(function () use ($delivery, $request) {
             $locked = Delivery::whereKey($delivery->id)->lockForUpdate()->firstOrFail();
             if ($locked->statut !== 'en_route') {
                 abort(409, 'Récupérez d’abord le colis chez le vendeur.');
             }
+            if ($locked->code_bloque_jusqu_a?->isFuture()) {
+                return [429, 'Trop de codes incorrects. Réessayez après '.$locked->code_bloque_jusqu_a->format('H:i').'.'];
+            }
             if (! hash_equals($locked->code, (string) $request->input('code'))) {
-                abort(422, 'Code de livraison incorrect. Demandez-le à l’acheteur.');
+                $echecs = $locked->code_echecs + 1;
+                if ($echecs >= Delivery::CODE_ECHECS_MAX) {
+                    $locked->update(['code_echecs' => 0, 'code_bloque_jusqu_a' => now()->addMinutes(Delivery::CODE_BLOCAGE_MINUTES)]);
+
+                    return [429, 'Trop de codes incorrects : saisie bloquée '.Delivery::CODE_BLOCAGE_MINUTES.' minutes. Vérifiez le code avec l’acheteur.'];
+                }
+                $locked->update(['code_echecs' => $echecs]);
+                $restants = Delivery::CODE_ECHECS_MAX - $echecs;
+
+                return [422, "Code de livraison incorrect. Demandez-le à l’acheteur ({$restants} essai(s) restant(s))."];
             }
 
             $order = Order::whereKey($locked->order_id)->lockForUpdate()->firstOrFail();
@@ -171,12 +185,17 @@ class DeliveryController extends Controller
                 'remuneration_payee_at' => $order->isCashOnDelivery() ? now() : null,
                 // Plus de suivi de position une fois livré.
                 'livreur_lat' => null, 'livreur_lng' => null, 'position_at' => null,
+                'code_echecs' => 0, 'code_bloque_jusqu_a' => null,
             ]);
 
             return $locked;
         });
 
-        return response()->json(DeliveryResource::make($delivery->fresh(self::RELATIONS))->resolve());
+        if (is_array($result)) {
+            return response()->json(['message' => $result[1]], $result[0]);
+        }
+
+        return response()->json(DeliveryResource::make($result->fresh(self::RELATIONS))->resolve());
     }
 
     // POST /api/livraisons/{delivery}/position (livreur) : position GPS pendant la course.

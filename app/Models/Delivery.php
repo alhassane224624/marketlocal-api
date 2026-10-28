@@ -11,8 +11,13 @@ class Delivery extends Model
 
     public const ACTIVES = ['disponible', 'acceptee', 'en_route'];
 
+    /** Code de remise : nombre d'erreurs tolérées avant blocage, et durée du blocage. */
+    public const CODE_ECHECS_MAX = 5;
+
+    public const CODE_BLOCAGE_MINUTES = 15;
+
     protected $fillable = [
-        'order_id', 'shop_id', 'livreur_id', 'statut', 'code',
+        'order_id', 'shop_id', 'livreur_id', 'statut', 'code', 'code_echecs', 'code_bloque_jusqu_a',
         'accepted_at', 'picked_up_at', 'delivered_at',
         'frais', 'remuneration_livreur', 'remuneration_payee_at',
         'livreur_lat', 'livreur_lng', 'position_at',
@@ -26,6 +31,7 @@ class Delivery extends Model
     protected function casts(): array
     {
         return [
+            'code_bloque_jusqu_a' => 'datetime',
             'accepted_at' => 'datetime',
             'picked_up_at' => 'datetime',
             'delivered_at' => 'datetime',

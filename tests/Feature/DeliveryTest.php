@@ -215,3 +215,25 @@ test('remboursement d un colis payé à la livraison : ventes retirées des stat
         ->and($d->litige_livreur_paye)->toBeTrue()
         ->and(\App\Models\OrderItem::encaissees()->where('order_id', $d->order_id)->count())->toBe(0);
 });
+
+test('le code de remise est bloqué après plusieurs erreurs, puis débloqué', function () {
+    ['vendeur' => $vendeur, 'livreur' => $livreur, 'orderId' => $orderId] = livraisonSetup($this);
+    $id = $this->actingAs($vendeur, 'sanctum')->postJson("/api/shop/orders/{$orderId}/livreur")->json('id');
+    $this->actingAs($livreur, 'sanctum')->postJson("/api/livraisons/{$id}/accepter")->assertOk();
+    $this->actingAs($livreur, 'sanctum')->postJson("/api/livraisons/{$id}/recuperer")->assertOk();
+    $code = Delivery::find($id)->code;
+    $mauvais = $code === '0000' ? '1111' : '0000';
+
+    for ($i = 1; $i < Delivery::CODE_ECHECS_MAX; $i++) {
+        $this->actingAs($livreur, 'sanctum')->postJson("/api/livraisons/{$id}/livrer", ['code' => $mauvais])->assertStatus(422);
+    }
+    $this->actingAs($livreur, 'sanctum')->postJson("/api/livraisons/{$id}/livrer", ['code' => $mauvais])->assertStatus(429);
+
+    // Même le bon code est refusé pendant le blocage.
+    $this->actingAs($livreur, 'sanctum')->postJson("/api/livraisons/{$id}/livrer", ['code' => $code])->assertStatus(429);
+    expect(Delivery::find($id)->statut)->toBe('en_route');
+
+    $this->travel(Delivery::CODE_BLOCAGE_MINUTES + 1)->minutes();
+    $this->actingAs($livreur, 'sanctum')->postJson("/api/livraisons/{$id}/livrer", ['code' => $code])
+        ->assertOk()->assertJsonPath('statut', 'livree');
+});

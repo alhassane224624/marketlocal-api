@@ -58,7 +58,11 @@ class OrderController extends Controller
             $itemsToCreate = [];
             $modePaiement = $request->validated('mode_paiement') ?? Order::PAIEMENT_CARTE;
 
-            foreach ($request->validated('items') as $item) {
+            // Verrous toujours pris dans le même ordre (par id) : deux paniers contenant les mêmes
+            // produits dans un ordre différent ne peuvent pas se bloquer mutuellement (deadlock).
+            $items = collect($request->validated('items'))->sortBy('product_id');
+
+            foreach ($items as $item) {
                 // Verrou : évite de vendre deux fois le même stock.
                 $product = Product::with('shop:id,nom,commission,statut,stripe_account_id,is_active')
                     ->visible()
