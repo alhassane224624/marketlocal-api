@@ -25,6 +25,31 @@ test('un admin crée un compte de n importe quel rôle, et lui seul', function (
     $this->postJson('/api/login', ['email' => 'new@example.com', 'password' => 'password123'])->assertOk();
 });
 
+test('un admin modifie un compte, sans changer les rôles qui casseraient des données', function () {
+    $admin = User::create(['name' => 'Ad', 'email' => 'adm@example.com', 'password' => Hash::make('password123'), 'role' => 'admin']);
+    $acheteur = User::create(['name' => 'A', 'email' => 'am@example.com', 'password' => Hash::make('password123'), 'role' => 'acheteur']);
+    $vendeur = User::create(['name' => 'V', 'email' => 'vm@example.com', 'password' => Hash::make('password123'), 'role' => 'vendeur']);
+    Shop::create(['user_id' => $vendeur->id, 'nom' => 'Shop', 'statut' => 'valide', 'commission' => 10]);
+    $acheteur->createToken('test');
+    $base = fn (User $u) => ['name' => $u->name, 'email' => $u->email, 'role' => $u->role];
+
+    $this->actingAs($acheteur, 'sanctum')->putJson("/api/admin/users/{$acheteur->id}", $base($acheteur))->assertForbidden();
+
+    // Mot de passe vide = inchangé ; e-mail inchangé accepté (unicité ignorée pour lui-même).
+    $this->actingAs($admin, 'sanctum')->putJson("/api/admin/users/{$acheteur->id}", [...$base($acheteur), 'name' => 'Amina', 'password' => '', 'role' => 'vendeur'])
+        ->assertOk()->assertJsonPath('name', 'Amina')->assertJsonPath('role', 'vendeur');
+    $this->postJson('/api/login', ['email' => 'am@example.com', 'password' => 'password123'])->assertOk();
+
+    // Nouveau mot de passe : sessions fermées.
+    $this->actingAs($admin, 'sanctum')->putJson("/api/admin/users/{$acheteur->id}", [...$base($acheteur->fresh()), 'password' => 'nouveau-mdp'])->assertOk();
+    expect($acheteur->tokens()->count())->toBe(0);
+    $this->postJson('/api/login', ['email' => 'am@example.com', 'password' => 'nouveau-mdp'])->assertOk();
+
+    $this->actingAs($admin, 'sanctum')->putJson("/api/admin/users/{$acheteur->id}", [...$base($acheteur->fresh()), 'email' => 'vm@example.com'])->assertStatus(422);
+    $this->actingAs($admin, 'sanctum')->putJson("/api/admin/users/{$vendeur->id}", [...$base($vendeur), 'role' => 'acheteur'])->assertStatus(422);
+    $this->actingAs($admin, 'sanctum')->putJson("/api/admin/users/{$admin->id}", [...$base($admin), 'role' => 'acheteur'])->assertStatus(422);
+});
+
 test('un admin peut passer commande et la retrouver dans ses commandes', function () {
     $admin = User::create(['name' => 'Ad', 'email' => 'ado@example.com', 'password' => Hash::make('password123'), 'role' => 'admin']);
     $vendeur = User::create(['name' => 'V', 'email' => 'vo@example.com', 'password' => Hash::make('password123'), 'role' => 'vendeur']);

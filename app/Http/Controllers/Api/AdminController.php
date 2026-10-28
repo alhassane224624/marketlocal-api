@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\StoreUserRequest;
+use App\Http\Requests\Admin\UpdateUserRequest;
 use App\Http\Resources\UserResource;
 use App\Models\Delivery;
 use App\Models\Order;
@@ -109,6 +110,40 @@ class AdminController extends Controller
             UserResource::make($user->load('shop:id,user_id,nom,statut')->loadCount('orders'))->resolve(),
             201
         );
+    }
+
+    // PUT /api/admin/users/{user} : modification d'un compte.
+    public function updateUser(UpdateUserRequest $request, User $user)
+    {
+        $data = $request->validated();
+
+        if ($data['role'] !== $user->role) {
+            // Changer de rôle laisserait des données orphelines (boutique, courses) ou couperait l'accès admin.
+            $blocage = match (true) {
+                $user->id === $request->user()->id => 'Vous ne pouvez pas changer votre propre rôle.',
+                $user->shop()->exists() => 'Ce vendeur a une boutique : son rôle ne peut pas être changé.',
+                $user->deliveries()->exists() => 'Ce livreur a déjà des courses : son rôle ne peut pas être changé.',
+                default => null,
+            };
+            if ($blocage) {
+                return response()->json(['message' => $blocage], 422);
+            }
+        }
+
+        if ($data['password'] ?? null) {
+            $data['password'] = Hash::make($data['password']);
+        } else {
+            unset($data['password']);
+        }
+
+        $user->update($data);
+
+        // Nouveau mot de passe : les sessions ouvertes de l'utilisateur sont fermées.
+        if (isset($data['password']) && $user->id !== $request->user()->id) {
+            $user->tokens()->delete();
+        }
+
+        return response()->json(UserResource::make($user->load('shop:id,user_id,nom,statut')->loadCount('orders'))->resolve());
     }
 
     // POST /api/admin/users/{user}/suspendre : bloque la connexion et ferme les sessions ouvertes.

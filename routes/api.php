@@ -116,6 +116,7 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
         Route::get('/stats', [AdminController::class, 'stats']);
         Route::get('/users', [AdminController::class, 'users']);
         Route::post('/users', [AdminController::class, 'storeUser']);
+        Route::put('/users/{user}', [AdminController::class, 'updateUser'])->whereNumber('user');
         Route::post('/users/{user}/suspendre', [AdminController::class, 'suspend'])->whereNumber('user');
         Route::post('/users/{user}/reactiver', [AdminController::class, 'reactivate'])->whereNumber('user');
         Route::get('/livreurs', [AdminController::class, 'livreurs']);
