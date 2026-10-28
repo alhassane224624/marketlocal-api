@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\CronController;
 use App\Http\Controllers\Api\DeliveryController;
 use App\Http\Controllers\Api\DisputeController;
 use App\Http\Controllers\Api\OrderController;
+use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\ReviewController;
@@ -27,6 +28,8 @@ Route::post('/stripe/webhook', [PaymentController::class, 'webhook']);
 Route::middleware('throttle:api')->group(function () {
     Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:register');
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
+    Route::post('/mot-de-passe/oublie', [PasswordResetController::class, 'forgot'])->middleware('throttle:password-reset');
+    Route::post('/mot-de-passe/reinitialiser', [PasswordResetController::class, 'reset'])->middleware('throttle:password-reset');
 
     Route::get('/categories', [CategoryController::class, 'index']);
     Route::get('/payment-methods', [PaymentController::class, 'methods']);

@@ -6,10 +6,31 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  # Tests Pest (SQLite en mémoire, voir phpunit.xml) : un test en échec bloque le déploiement.
+  tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer
+
+      - name: Dependances PHP (avec dev)
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Tests
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan test
+
+  deploy:
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
 
       - uses: shivammathur/setup-php@v2
         with:
