@@ -54,8 +54,8 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
     Route::delete('/addresses/{address}', [AddressController::class, 'destroy'])->whereNumber('address');
     Route::put('/addresses/{address}/defaut', [AddressController::class, 'setDefault'])->whereNumber('address');
 
-    // --- Acheteur ---
-    Route::middleware('role:acheteur')->group(function () {
+    // --- Acheteur (l'admin peut aussi commander) ---
+    Route::middleware('role:acheteur,admin')->group(function () {
         Route::post('/orders', [OrderController::class, 'store']);
         Route::get('/orders/mine', [OrderController::class, 'mine']); // avant /orders/{order}
         Route::post('/orders/{order}/payer', [PaymentController::class, 'createPaymentIntent'])
@@ -115,6 +115,7 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
     Route::prefix('admin')->middleware('role:admin')->group(function () {
         Route::get('/stats', [AdminController::class, 'stats']);
         Route::get('/users', [AdminController::class, 'users']);
+        Route::post('/users', [AdminController::class, 'storeUser']);
         Route::post('/users/{user}/suspendre', [AdminController::class, 'suspend'])->whereNumber('user');
         Route::post('/users/{user}/reactiver', [AdminController::class, 'reactivate'])->whereNumber('user');
         Route::get('/livreurs', [AdminController::class, 'livreurs']);

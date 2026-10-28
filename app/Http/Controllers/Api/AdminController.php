@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Admin\StoreUserRequest;
 use App\Http\Resources\UserResource;
 use App\Models\Delivery;
 use App\Models\Order;
@@ -12,6 +13,7 @@ use App\Models\Shop;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 
 // Toutes les routes de ce contrôleur sont protégées par le middleware
 // role:admin (voir routes/api.php) : plus de vérification manuelle ici.
@@ -92,6 +94,20 @@ class AdminController extends Controller
     {
         return UserResource::collection(
             User::with('shop:id,user_id,nom,statut')->withCount('orders')->latest()->get()
+        );
+    }
+
+    // POST /api/admin/users : création d'un compte (tous rôles, admin compris).
+    public function storeUser(StoreUserRequest $request)
+    {
+        $data = $request->validated();
+        $data['password'] = Hash::make($data['password']);
+
+        $user = User::create($data);
+
+        return response()->json(
+            UserResource::make($user->load('shop:id,user_id,nom,statut')->loadCount('orders'))->resolve(),
+            201
         );
     }
 
