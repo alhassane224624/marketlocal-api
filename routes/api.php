@@ -117,6 +117,7 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
     // --- Admin ---
     Route::prefix('admin')->middleware('role:admin')->group(function () {
         Route::get('/stats', [AdminController::class, 'stats']);
+        Route::get('/journal', [AdminController::class, 'journal']);
         Route::get('/users', [AdminController::class, 'users']);
         Route::post('/users', [AdminController::class, 'storeUser']);
         Route::put('/users/{user}', [AdminController::class, 'updateUser'])->whereNumber('user');

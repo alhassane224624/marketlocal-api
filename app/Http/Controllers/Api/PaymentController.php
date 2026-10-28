@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AdminLog;
 use App\Models\Order;
 use App\Models\Shop;
 use App\Services\StripeConnectService;
@@ -172,6 +173,8 @@ class PaymentController extends Controller
                 ]);
             });
 
+            AdminLog::record('commande_remboursee', $order, 'Commande n°'.$order->id.' remboursée ('.number_format((float) $order->total, 2, ',', ' ').' MAD)');
+
             return response()->json(['message' => 'Remboursement effectué.', 'refund_id' => $refund->id]);
         } catch (Throwable $e) {
             report($e);
@@ -231,7 +234,10 @@ class PaymentController extends Controller
             return;
         }
 
-        $order = DB::transaction(function () use ($orderId, $paymentIntent) {
+        // Vrai seulement au premier passage en « payee » (webhook et retour client peuvent se croiser).
+        $vientDetrePayee = false;
+
+        $order = DB::transaction(function () use ($orderId, $paymentIntent, &$vientDetrePayee) {
             $order = Order::with('items.shop')->whereKey($orderId)->lockForUpdate()->first();
             if (! $order) {
                 return null;
@@ -258,6 +264,7 @@ class PaymentController extends Controller
                     'stripe_payment_intent_id' => $paymentIntent->id,
                     'paid_at' => now(),
                 ]);
+                $vientDetrePayee = true;
             }
 
             return $order->fresh(['items.shop']);
@@ -265,6 +272,10 @@ class PaymentController extends Controller
 
         if (! $order) {
             return;
+        }
+
+        if ($vientDetrePayee) {
+            $order->sendConfirmationMails();
         }
 
         // Paiement arrivé après l'annulation de la commande (expirée ou annulée par l'admin) :

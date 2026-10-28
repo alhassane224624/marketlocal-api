@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\DeliveryResource;
 use App\Models\Delivery;
 use App\Models\Order;
+use App\Notifications\OrderDelivered;
+use App\Support\Notifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -194,6 +196,9 @@ class DeliveryController extends Controller
         if (is_array($result)) {
             return response()->json(['message' => $result[1]], $result[0]);
         }
+
+        $order = Order::with('buyer')->find($result->order_id);
+        Notifier::send($order?->buyer, new OrderDelivered($order, $result->shop_id));
 
         return response()->json(DeliveryResource::make($result->fresh(self::RELATIONS))->resolve());
     }

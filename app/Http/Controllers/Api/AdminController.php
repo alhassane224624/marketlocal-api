@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\StoreUserRequest;
 use App\Http\Requests\Admin\UpdateUserRequest;
 use App\Http\Resources\UserResource;
+use App\Models\AdminLog;
 use App\Models\Delivery;
 use App\Models\Order;
 use App\Models\OrderItem;
@@ -86,16 +87,62 @@ class AdminController extends Controller
         // Seulement les courses dont le client a confirmé la réception, sans litige.
         $montant = (float) $user->deliveries()->payables()->whereNull('remuneration_payee_at')->sum('remuneration_livreur');
         $user->deliveries()->payables()->whereNull('remuneration_payee_at')->update(['remuneration_payee_at' => now()]);
+        AdminLog::record('livreur_paye', $user, "Rémunération versée à {$user->name} : ".number_format($montant, 2, ',', ' ').' MAD');
 
         return response()->json(['message' => 'Rémunération marquée comme versée.', 'montant' => round($montant, 2)]);
     }
 
-    // GET /api/admin/users
-    public function users()
+    // GET /api/admin/users?role=vendeur|suspendu&q=...&page=2 (25 par page)
+    public function users(Request $request)
     {
-        return UserResource::collection(
-            User::with('shop:id,user_id,nom,statut')->withCount('orders')->latest()->get()
-        );
+        $filtre = $request->query('role');
+        $q = trim((string) $request->query('q', ''));
+
+        $users = User::with('shop:id,user_id,nom,statut')->withCount('orders')
+            ->when($filtre === 'suspendu', fn ($query) => $query->whereNotNull('suspendu_at'))
+            ->when(in_array($filtre, ['acheteur', 'vendeur', 'livreur', 'admin'], true), fn ($query) => $query->where('role', $filtre))
+            ->when($q !== '', fn ($query) => $query->where(fn ($w) => $w
+                ->where('name', 'like', "%{$q}%")
+                ->orWhere('email', 'like', "%{$q}%")
+                ->orWhere('ville', 'like', "%{$q}%")
+                ->orWhereHas('shop', fn ($s) => $s->where('nom', 'like', "%{$q}%"))))
+            ->latest()
+            ->paginate(25);
+
+        // Compteurs des onglets (tous les comptes, sans la recherche) : une seule requête.
+        $parRole = User::selectRaw('role, count(*) as total')->groupBy('role')->pluck('total', 'role');
+
+        return response()->json([
+            'data' => UserResource::collection($users->items())->resolve(),
+            'meta' => ['page' => $users->currentPage(), 'last_page' => $users->lastPage(), 'total' => $users->total()],
+            'counts' => [
+                'tous' => (int) $parRole->sum(),
+                ...collect(['acheteur', 'vendeur', 'livreur', 'admin'])->mapWithKeys(fn ($r) => [$r => (int) ($parRole[$r] ?? 0)]),
+                'suspendu' => User::whereNotNull('suspendu_at')->count(),
+            ],
+        ]);
+    }
+
+    // GET /api/admin/journal?action=...&page=2 (30 par page)
+    public function journal(Request $request)
+    {
+        $logs = AdminLog::with('admin:id,name')
+            ->when($request->query('action'), fn ($q, $action) => $q->where('action', $action))
+            ->latest('id')
+            ->paginate(30);
+
+        return response()->json([
+            'data' => collect($logs->items())->map(fn (AdminLog $log) => [
+                'id' => $log->id,
+                'action' => $log->action,
+                'description' => $log->description,
+                'cible_type' => $log->cible_type,
+                'cible_id' => $log->cible_id,
+                'admin' => $log->admin?->name ?? 'Admin supprimé',
+                'created_at' => $log->created_at,
+            ]),
+            'meta' => ['page' => $logs->currentPage(), 'last_page' => $logs->lastPage(), 'total' => $logs->total()],
+        ]);
     }
 
     // POST /api/admin/users : création d'un compte (tous rôles, admin compris).
@@ -105,6 +152,7 @@ class AdminController extends Controller
         $data['password'] = Hash::make($data['password']);
 
         $user = User::create($data);
+        AdminLog::record('utilisateur_cree', $user, "Compte {$user->role} créé : {$user->name} ({$user->email})");
 
         return response()->json(
             UserResource::make($user->load('shop:id,user_id,nom,statut')->loadCount('orders'))->resolve(),
@@ -136,7 +184,20 @@ class AdminController extends Controller
             unset($data['password']);
         }
 
-        $user->update($data);
+        $user->fill($data);
+        // Champs réellement modifiés, pour le journal (sans la valeur du mot de passe).
+        $modifies = collect(array_keys($user->getDirty()))
+            ->map(fn ($champ) => match ($champ) {
+                'role' => "rôle → {$user->role}",
+                'password' => 'mot de passe',
+                'name' => 'nom',
+                default => $champ,
+            })
+            ->implode(', ');
+        $user->save();
+        if ($modifies !== '') {
+            AdminLog::record('utilisateur_modifie', $user, "Compte de {$user->name} modifié : {$modifies}");
+        }
 
         // Nouveau mot de passe : les sessions ouvertes de l'utilisateur sont fermées.
         if (isset($data['password']) && $user->id !== $request->user()->id) {
@@ -157,6 +218,7 @@ class AdminController extends Controller
 
         $user->update(['suspendu_at' => now(), 'motif_suspension' => $data['motif']]);
         $user->tokens()->delete();
+        AdminLog::record('utilisateur_suspendu', $user, "Compte de {$user->name} suspendu : {$data['motif']}");
 
         return response()->json(UserResource::make($user->load('shop:id,user_id,nom,statut')->loadCount('orders'))->resolve());
     }
@@ -165,6 +227,7 @@ class AdminController extends Controller
     public function reactivate(User $user)
     {
         $user->update(['suspendu_at' => null, 'motif_suspension' => null]);
+        AdminLog::record('utilisateur_reactive', $user, "Compte de {$user->name} réactivé");
 
         return response()->json(UserResource::make($user->load('shop:id,user_id,nom,statut')->loadCount('orders'))->resolve());
     }

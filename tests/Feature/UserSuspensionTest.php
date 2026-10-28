@@ -33,7 +33,7 @@ test('un admin suspend un vendeur avec motif : connexion bloquée, produits masq
     $this->actingAs($acheteur, 'sanctum')->getJson("/api/products/{$product->id}")->assertNotFound();
     $this->getJson('/api/shops')->assertOk()->assertJsonCount(0);
 
-    $users = $this->actingAs($admin, 'sanctum')->getJson('/api/admin/users')->assertOk()->json();
+    $users = $this->actingAs($admin, 'sanctum')->getJson('/api/admin/users')->assertOk()->json('data');
     expect(collect($users)->firstWhere('id', $vendeur->id)['shop']['nom'])->toBe('Shop');
 
     $this->actingAs($admin, 'sanctum')->postJson("/api/admin/users/{$vendeur->id}/reactiver")->assertOk()->assertJsonPath('suspendu_at', null);

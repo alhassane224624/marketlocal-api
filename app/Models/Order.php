@@ -2,6 +2,9 @@
 
 namespace App\Models;
 
+use App\Notifications\NewOrderForShop;
+use App\Notifications\OrderConfirmed;
+use App\Support\Notifier;
 use Illuminate\Database\Eloquent\Model;
 
 class Order extends Model
@@ -34,6 +37,17 @@ class Order extends Model
     public function buyer() { return $this->belongsTo(User::class, 'buyer_id'); }
     public function items() { return $this->hasMany(OrderItem::class); }
     public function deliveries() { return $this->hasMany(Delivery::class); }
+
+    /** E-mails de commande confirmée : à l'acheteur, et à chaque vendeur pour ses articles. */
+    public function sendConfirmationMails(): void
+    {
+        Notifier::send($this->buyer, new OrderConfirmed($this));
+
+        $shops = Shop::with('user')->whereIn('id', $this->items()->distinct()->pluck('shop_id'))->get();
+        foreach ($shops as $shop) {
+            Notifier::send($shop->user, new NewOrderForShop($this, $shop->id));
+        }
+    }
 
     /**
      * Fait passer les articles d'une boutique à $statut (expediee ou livree), puis recalcule

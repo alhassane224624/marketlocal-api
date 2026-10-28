@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\DeliveryResource;
+use App\Models\AdminLog;
 use App\Models\Delivery;
 use App\Services\StripeConnectService;
 use Illuminate\Http\Request;
@@ -60,6 +61,7 @@ class DisputeController extends Controller
                 'litige_livreur_paye' => true,
                 'recu_confirme_at' => $delivery->recu_confirme_at ?? now(),
             ]);
+            AdminLog::record('litige_resolu', $delivery, "Litige de la course n°{$delivery->id} (commande n°{$order->id}) : problème non retenu");
 
             return response()->json(DeliveryResource::make($delivery->fresh(self::RELATIONS))->resolve());
         }
@@ -119,6 +121,8 @@ class DisputeController extends Controller
                 'stripe_refund_id' => $refundId,
             ]);
         });
+        AdminLog::record('litige_resolu', $delivery, "Litige de la course n°{$delivery->id} (commande n°{$order->id}) : client remboursé de "
+            .number_format($montant, 2, ',', ' ').' MAD');
 
         return response()->json(DeliveryResource::make($delivery->fresh(self::RELATIONS))->resolve());
     }

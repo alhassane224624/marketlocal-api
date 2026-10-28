@@ -7,8 +7,11 @@ use App\Http\Requests\Shop\StoreShopRequest;
 use App\Http\Requests\Shop\UpdateCommissionRequest;
 use App\Http\Requests\Shop\UpdateShopRequest;
 use App\Http\Resources\ShopResource;
+use App\Models\AdminLog;
 use App\Models\Shop;
+use App\Notifications\ShopReviewed;
 use App\Services\CloudinaryService;
+use App\Support\Notifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
@@ -90,6 +93,8 @@ class ShopController extends Controller
     public function validate(Shop $shop)
     {
         $shop->update(['statut' => 'valide', 'motif_refus' => null, 'valide_at' => now()]);
+        AdminLog::record('boutique_validee', $shop, "Boutique « {$shop->nom} » validée");
+        Notifier::send($shop->user, new ShopReviewed($shop));
         return response()->json(ShopResource::make($shop->load('user'))->resolve());
     }
 
@@ -97,9 +102,17 @@ class ShopController extends Controller
     {
         $data = $request->validate(['motif' => ['required', 'string', 'min:5', 'max:500']]);
         $shop->update(['statut' => 'refuse', 'motif_refus' => $data['motif'], 'valide_at' => null]);
+        AdminLog::record('boutique_refusee', $shop, "Boutique « {$shop->nom} » refusée : {$data['motif']}");
+        Notifier::send($shop->user, new ShopReviewed($shop));
         return response()->json(ShopResource::make($shop->load('user'))->resolve());
     }
-    public function updateCommission(UpdateCommissionRequest $request, Shop $shop) { $shop->update(['commission' => $request->commission]); return response()->json(ShopResource::make($shop)->resolve()); }
+    public function updateCommission(UpdateCommissionRequest $request, Shop $shop)
+    {
+        $ancienne = $shop->commission;
+        $shop->update(['commission' => $request->commission]);
+        AdminLog::record('commission_modifiee', $shop, "Commission de « {$shop->nom} » : {$ancienne} % → {$shop->commission} %");
+        return response()->json(ShopResource::make($shop)->resolve());
+    }
 
     private function deleteLocalImage(?string $url): void
     {

@@ -6,10 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Order\StoreOrderRequest;
 use App\Http\Requests\Order\UpdateOrderStatusRequest;
 use App\Http\Resources\OrderResource;
+use App\Models\AdminLog;
 use App\Models\Delivery;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Notifications\OrderDelivered;
+use App\Support\Notifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -132,6 +135,11 @@ class OrderController extends Controller
 
             return $order;
         });
+
+        // Paiement carte : les e-mails partent une fois le paiement reçu (PaymentController).
+        if ($order->isCashOnDelivery()) {
+            $order->sendConfirmationMails();
+        }
 
         return response()->json(
             OrderResource::make($order->load('items'))->resolve(),
@@ -377,6 +385,17 @@ class OrderController extends Controller
 
             return $locked;
         });
+
+        $demande = $request->validated('statut');
+        $isAdmin = $request->user()->role === 'admin';
+
+        if ($demande === 'livree') {
+            // Vendeur : seuls ses articles sont livrés. Admin : toute la commande.
+            Notifier::send($order->buyer, new OrderDelivered($order, $isAdmin ? null : $request->user()->shop?->id));
+        }
+        if ($isAdmin) {
+            AdminLog::record('commande_statut', $order, "Commande n°{$order->id} passée à « {$demande} »");
+        }
 
         return response()->json(OrderResource::make($order)->resolve());
     }
