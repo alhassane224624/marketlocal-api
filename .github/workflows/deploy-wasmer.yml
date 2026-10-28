@@ -33,6 +33,10 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           MYSQL_ATTR_SSL_CA: ${{ github.workspace }}/certs/aiven-ca.pem
         run: |
+          # Un secret collé dans GitHub garde souvent un retour à la ligne final : on le retire.
+          for v in DB_HOST DB_PORT DB_DATABASE DB_USERNAME DB_PASSWORD; do
+            export "$v=$(printf '%s' "${!v}" | tr -d '[:space:]')"
+          done
           if [ -z "$DB_HOST" ] || [ -z "$DB_PASSWORD" ]; then
             echo "::error::Secrets DB_* manquants (Settings > Secrets and variables > Actions)."
             exit 1
