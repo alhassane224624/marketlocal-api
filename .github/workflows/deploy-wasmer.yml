@@ -19,6 +19,26 @@ jobs:
       - name: Dependances PHP
         run: composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
 
+      # Wasmer n'a pas de shell : la base Aiven est mise à jour d'ici, avant de déployer le code
+      # qui en dépend. En cas d'échec, le déploiement s'arrête.
+      - name: Migrations (base Aiven)
+        env:
+          APP_ENV: production
+          CACHE_STORE: array
+          DB_CONNECTION: mysql
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_DATABASE: ${{ secrets.DB_DATABASE }}
+          DB_USERNAME: ${{ secrets.DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          MYSQL_ATTR_SSL_CA: ${{ github.workspace }}/certs/aiven-ca.pem
+        run: |
+          if [ -z "$DB_HOST" ] || [ -z "$DB_PASSWORD" ]; then
+            echo "::error::Secrets DB_* manquants (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          php artisan migrate --force --no-interaction
+
       - name: Installer Wasmer
         run: curl https://get.wasmer.io -sSfL | sh
 
